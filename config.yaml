@@ -1,0 +1,32 @@
+# Database (数据库配置)
+database:
+  driver: "sqlite"
+  dsn: ".db/bots-nest.db?_journal_mode=WAL"
+  max_open_conns: 1
+
+# LLM Providers (公共配置)
+llm_providers:
+  - name: "default"
+    endpoint: "https://api.openai.com/v1"
+    api_key: "sk-your-key-here"
+
+# MCPs (公共配置)
+mcps:
+  - name: "example-mcp"
+    endpoint: "http://localhost:9090"
+
+# Bots (机器人配置)
+bots:
+  - name: "my-bot"
+    wecom_bot_id: "aibDKL2cTKOzrES6hhm_nhF4bHJjjIor8Cj"
+    wecom_secret: "eOtECozizpAvFj5vY1HwFuiNZAVx164Qv59yIamUWnm"
+    llm_provider_id: "default"
+    llm_model: "gpt-4o"
+    llm_temperature: 0.7
+    llm_max_tokens: 2048
+    max_session_tokens: 4096
+    skills:
+      - name: "search"
+        description: "搜索技能"
+        system_prompt: "你是一个搜索助手，可以帮助用户查找信息。"
+        tools: "[]"

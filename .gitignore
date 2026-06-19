@@ -1,0 +1,16 @@
+.claude
+.kilocode
+.kimi
+.opencode
+.db
+openspec
+.codegraph/
+node_modules/
+.vite/
+dist
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+bots-nest
