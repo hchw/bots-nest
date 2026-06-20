@@ -35,7 +35,13 @@ type FunctionDef struct {
 	Parameters  interface{} `json:"parameters"`
 }
 
+type StreamEvent struct {
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Done      bool       `json:"done"`
+}
+
 type Client interface {
 	Chat(messages []ChatMessage, tools []ToolDefinition) (*ChatResponse, error)
-	ChatStream(messages []ChatMessage, tools []ToolDefinition) (<-chan string, error)
+	ChatStream(messages []ChatMessage, tools []ToolDefinition) (<-chan StreamEvent, error)
 }

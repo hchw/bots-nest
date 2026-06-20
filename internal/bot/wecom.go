@@ -24,9 +24,9 @@ const (
 )
 
 type WeComMessage struct {
-	Cmd     string          `json:"cmd"`
-	Headers WeComHeaders    `json:"headers"`
-	Body    WeComMsgBody    `json:"body"`
+	Cmd     string       `json:"cmd"`
+	Headers WeComHeaders `json:"headers"`
+	Body    WeComMsgBody `json:"body"`
 }
 
 type WeComHeaders struct {
@@ -34,15 +34,15 @@ type WeComHeaders struct {
 }
 
 type WeComMsgBody struct {
-	MsgID       string       `json:"msgid"`
-	AibotID     string       `json:"aibotid"`
-	ChatType    string       `json:"chattype"`
-	From        *WeComFrom   `json:"from"`
-	ChatID      string       `json:"chatid,omitempty"`
-	MsgType     string       `json:"msgtype"`
-	Text        *WeComText   `json:"text,omitempty"`
-	ResponseURL string       `json:"response_url,omitempty"`
-	EventType   string       `json:"event_type,omitempty"`
+	MsgID       string     `json:"msgid"`
+	AibotID     string     `json:"aibotid"`
+	ChatType    string     `json:"chattype"`
+	From        *WeComFrom `json:"from"`
+	ChatID      string     `json:"chatid,omitempty"`
+	MsgType     string     `json:"msgtype"`
+	Text        *WeComText `json:"text,omitempty"`
+	ResponseURL string     `json:"response_url,omitempty"`
+	EventType   string     `json:"event_type,omitempty"`
 }
 
 type WeComFrom struct {
@@ -54,9 +54,9 @@ type WeComText struct {
 }
 
 type WeComOutgoingMsg struct {
-	Cmd     string              `json:"cmd"`
-	Headers WeComHeaders        `json:"headers"`
-	Body    WeComOutgoingBody   `json:"body"`
+	Cmd     string            `json:"cmd"`
+	Headers WeComHeaders      `json:"headers"`
+	Body    WeComOutgoingBody `json:"body"`
 }
 
 type WeComOutgoingBody struct {
@@ -83,13 +83,17 @@ type WeComClient struct {
 	closeOnce      sync.Once
 	wg             sync.WaitGroup
 	statusCallback func(status string)
+
+	lastSendTime    time.Time
+	minSendInterval time.Duration
 }
 
 func NewWeComClient(botID, secret string) *WeComClient {
 	return &WeComClient{
-		botID:    botID,
-		secret:   secret,
-		stopChan: make(chan struct{}),
+		botID:           botID,
+		secret:          secret,
+		stopChan:        make(chan struct{}),
+		minSendInterval: 150 * time.Millisecond,
 	}
 }
 
@@ -202,6 +206,18 @@ func (w *WeComClient) readLoop() {
 			return
 		}
 
+		// Check for API error/success responses (they have errcode, no cmd field)
+		var rawMap map[string]interface{}
+		if json.Unmarshal(message, &rawMap) == nil {
+			if errcode, ok := rawMap["errcode"]; ok {
+				code := int(errcode.(float64))
+				if code != 0 {
+					log.Printf("机器人 %s 发送消息返回错误: %s", w.botID, string(message))
+				}
+				continue
+			}
+		}
+
 		var msg WeComMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
 			log.Printf("机器人 %s 消息解析失败: %v", w.botID, err)
@@ -223,14 +239,18 @@ func (w *WeComClient) readLoop() {
 }
 
 func (w *WeComClient) SendReply(reqID string, content string) error {
+	return w.SendStreamChunk(reqID, fmt.Sprintf("s_%d", time.Now().UnixNano()), content, true)
+}
+
+func (w *WeComClient) SendStreamChunk(reqID, streamID, content string, finish bool) error {
 	msg := WeComOutgoingMsg{
 		Cmd:     cmdRespondMsg,
 		Headers: WeComHeaders{ReqID: reqID},
 		Body: WeComOutgoingBody{
 			MsgType: "stream",
 			Stream: &WeComStream{
-				ID:      fmt.Sprintf("s_%d", time.Now().UnixNano()),
-				Finish:  true,
+				ID:      streamID,
+				Finish:  finish,
 				Content: content,
 			},
 		},
@@ -256,9 +276,22 @@ func (w *WeComClient) writeJSON(v interface{}) error {
 	if w.conn == nil {
 		return fmt.Errorf("WebSocket 未连接")
 	}
+
+	if !w.lastSendTime.IsZero() {
+		elapsed := time.Since(w.lastSendTime)
+		if elapsed < w.minSendInterval {
+			time.Sleep(w.minSendInterval - elapsed)
+		}
+	}
+
 	data, _ := json.Marshal(v)
 	log.Printf("[DEBUG] 机器人 %s 发送消息: %s", w.botID, string(data))
-	return w.conn.WriteJSON(v)
+
+	err := w.conn.WriteJSON(v)
+	if err == nil {
+		w.lastSendTime = time.Now()
+	}
+	return err
 }
 
 func (w *WeComClient) Close() {

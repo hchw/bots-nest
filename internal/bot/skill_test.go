@@ -26,45 +26,25 @@ func TestSkillRegister(t *testing.T) {
 	}
 }
 
-func TestSkillMatch(t *testing.T) {
+func TestSkillLookup(t *testing.T) {
 	engine := NewSkillEngine()
 	engine.Register("bot1", []Skill{
 		{Name: "搜索", Description: "搜索技能", SystemPrompt: "搜索助手", Enabled: true},
+		{Name: "介绍", Description: "介绍技能", SystemPrompt: "介绍助手", Enabled: false},
 	})
-	skill := engine.Match("bot1", "帮我搜索一下")
+	skill := engine.Lookup("bot1", "搜索")
 	if skill == nil {
-		t.Fatal("应匹配到搜索技能")
+		t.Fatal("应找到搜索技能")
 	}
 	if skill.Name != "搜索" {
-		t.Errorf("期望匹配 搜索，得到 %s", skill.Name)
+		t.Errorf("期望 搜索，得到 %s", skill.Name)
 	}
-}
-
-func TestSkillNoMatch(t *testing.T) {
-	engine := NewSkillEngine()
-	engine.Register("bot1", []Skill{
-		{Name: "search", Description: "搜索", SystemPrompt: "搜索助手", Enabled: true},
-	})
-	skill := engine.Match("bot1", "你好")
-	if skill != nil {
-		t.Fatal("不应匹配任何技能")
+	skill2 := engine.Lookup("bot1", "介绍")
+	if skill2 != nil {
+		t.Fatal("禁用技能不应被 Lookup 找到")
 	}
-}
-
-func TestContainsIgnoreCase(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		expected  bool
-	}{
-		{"Hello World", "hello", true},
-		{"Hello World", "WORLD", true},
-		{"Hello World", "xyz", false},
-		{"", "", true},
-	}
-	for _, tt := range tests {
-		got := containsIgnoreCase(tt.s, tt.substr)
-		if got != tt.expected {
-			t.Errorf("containsIgnoreCase(%q, %q) = %v, 期望 %v", tt.s, tt.substr, got, tt.expected)
-		}
+	skill3 := engine.Lookup("bot1", "不存在")
+	if skill3 != nil {
+		t.Fatal("不应找到不存在的技能")
 	}
 }

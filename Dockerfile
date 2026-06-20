@@ -17,5 +17,6 @@ FROM alpine:3.19
 WORKDIR /app
 COPY --from=backend /app/bots-nest .
 COPY config.yaml .
+COPY skills ./skills
 EXPOSE 8080
 CMD ["./bots-nest"]

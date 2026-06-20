@@ -5,6 +5,8 @@ package bot
 
 import (
 	"testing"
+
+	"github.com/hchw/bots-nest/internal/config"
 )
 
 func TestNewSessionManager(t *testing.T) {
@@ -17,15 +19,19 @@ func TestNewSessionManager(t *testing.T) {
 	}
 }
 
+func newTestConfig() *config.Config {
+	return &config.Config{SkillsDir: "skills"}
+}
+
 func TestNewBotManager(t *testing.T) {
-	bm := NewBotManager()
+	bm := NewBotManager(newTestConfig())
 	if bm == nil {
 		t.Fatal("bm 不应为 nil")
 	}
 }
 
 func TestBotManagerAddGet(t *testing.T) {
-	bm := NewBotManager()
+	bm := NewBotManager(newTestConfig())
 	bot := &BotInstance{ID: "bot1"}
 	bm.AddBot("bot1", bot)
 	got := bm.GetBot("bot1")
@@ -38,7 +44,7 @@ func TestBotManagerAddGet(t *testing.T) {
 }
 
 func TestBotManagerRemove(t *testing.T) {
-	bm := NewBotManager()
+	bm := NewBotManager(newTestConfig())
 	bm.AddBot("bot1", &BotInstance{ID: "bot1"})
 	bm.RemoveBot("bot1")
 	got := bm.GetBot("bot1")
@@ -48,7 +54,7 @@ func TestBotManagerRemove(t *testing.T) {
 }
 
 func TestBotManagerGetAll(t *testing.T) {
-	bm := NewBotManager()
+	bm := NewBotManager(newTestConfig())
 	bm.AddBot("bot1", &BotInstance{ID: "bot1"})
 	bm.AddBot("bot2", &BotInstance{ID: "bot2"})
 	all := bm.GetAll()

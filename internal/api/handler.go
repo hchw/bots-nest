@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/bot"
+	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
 	"strconv"
 	"strings"
@@ -19,10 +21,11 @@ import (
 
 type Handler struct {
 	botManager *bot.BotManager
+	cfg        *config.Config
 }
 
-func NewHandler(bm *bot.BotManager) *Handler {
-	return &Handler{botManager: bm}
+func NewHandler(bm *bot.BotManager, cfg *config.Config) *Handler {
+	return &Handler{botManager: bm, cfg: cfg}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -184,11 +187,35 @@ func (h *Handler) listBotSessions(c *gin.Context) {
 }
 
 func (h *Handler) listBotSkills(c *gin.Context) {
-	botID := c.Param("id")
-	var skills []db.Skill
-	db.DB.Where("bot_id = ?", botID).Find(&skills)
-	c.JSON(http.StatusOK, skills)
-}
+		botID := c.Param("id")
+
+		builtinSkills, err := bot.LoadBuiltinSkills(h.cfg.SkillsDir)
+		if err != nil {
+			log.Printf("[API] 加载内置 Skill 失败: %v", err)
+		}
+		skillMap := make(map[string]db.Skill)
+		for _, s := range builtinSkills {
+			skillMap[s.Name] = db.Skill{
+				Name:         s.Name,
+				Description:  s.Description,
+				SystemPrompt: s.SystemPrompt,
+				Tools:        s.Tools,
+				Enabled:      s.Enabled,
+			}
+		}
+
+		var dbSkills []db.Skill
+		db.DB.Where("bot_id = ?", botID).Find(&dbSkills)
+		for _, s := range dbSkills {
+			skillMap[s.Name] = s
+		}
+
+		var result []db.Skill
+		for _, s := range skillMap {
+			result = append(result, s)
+		}
+		c.JSON(http.StatusOK, result)
+	}
 
 func (h *Handler) getSession(c *gin.Context) {
 	key := c.Param("key")
@@ -332,21 +359,14 @@ func (h *Handler) deleteLLMProvider(c *gin.Context) {
 }
 
 func autoDiscoverTools(endpoint string) string {
-	client := resty.New()
-	resp, err := client.R().Get(endpoint + "/tools")
+	client := agent.NewMCPClient("discovery", endpoint)
+	result, err := client.DiscoverTools()
 	if err != nil {
-		resp, err = client.R().Get(endpoint)
-		if err != nil {
-			return "[]"
-		}
-	}
-
-	var tools interface{}
-	if err := json.Unmarshal(resp.Body(), &tools); err != nil {
+		log.Printf("[MCP] DiscoverTools 失败 %s: %v", endpoint, err)
 		return "[]"
 	}
-	data, _ := json.Marshal(tools)
-	return string(data)
+	log.Printf("[MCP] DiscoverTools 成功 %s: %s", endpoint, result)
+	return result
 }
 
 func (h *Handler) createMCP(c *gin.Context) {

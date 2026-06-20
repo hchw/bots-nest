@@ -4,10 +4,13 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,4 +76,65 @@ func (e *ShellExecutor) Execute(command string) (string, error) {
 	}
 
 	return result, nil
+}
+
+func (e *ShellExecutor) ExecuteStream(command string) (<-chan string, error) {
+	if !e.isAllowed(command) {
+		return nil, fmt.Errorf("命令不在白名单中: %s", strings.Fields(command)[0])
+	}
+
+	if e.isInteractive(command) {
+		return nil, fmt.Errorf("交互式命令不允许: %s", command)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("创建 stdout 管道失败: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("创建 stderr 管道失败: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("启动命令失败: %w", err)
+	}
+
+	ch := make(chan string, 64)
+
+	go func() {
+		defer close(ch)
+		defer cancel()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		readPipe := func(pipe io.ReadCloser) {
+			defer wg.Done()
+			defer pipe.Close()
+			scanner := bufio.NewScanner(pipe)
+			scanner.Buffer(make([]byte, 1024*64), 1024*64)
+			for scanner.Scan() {
+				select {
+				case ch <- scanner.Text() + "\n":
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		go readPipe(stdout)
+		go readPipe(stderr)
+
+		cmd.Wait()
+		wg.Wait()
+	}()
+
+	return ch, nil
 }

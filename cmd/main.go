@@ -5,6 +5,7 @@ package main
 
 import (
 	"log"
+	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/api"
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
@@ -26,14 +27,28 @@ func main() {
 	db.Init(cfg)
 	db.Migrate()
 	db.SeedFromYAML(cfg)
+
+	// 补发现已有 MCP 的工具列表（首次启动或旧数据库升级）
+	var mcps []db.MCP
+	db.DB.Where("tools IS NULL OR tools = '' OR tools = '[]'").Find(&mcps)
+	for _, m := range mcps {
+		log.Printf("[MCP] 补发现工具: %s (%s)", m.Name, m.Endpoint)
+		tools, err := agent.NewMCPClient(m.Name, m.Endpoint).DiscoverTools()
+		if err != nil {
+			log.Printf("[MCP] %s 发现失败: %v", m.Name, err)
+			continue
+		}
+		db.DB.Model(&m).Update("tools", tools)
+	}
+
 	log.Println("数据库初始化完成")
 
-	botManager := bot.NewBotManager()
+	botManager := bot.NewBotManager(cfg)
 	botManager.LoadFromDB()
 
 	r := gin.Default()
 
-	handler := api.NewHandler(botManager)
+	handler := api.NewHandler(botManager, cfg)
 	handler.RegisterRoutes(r)
 
 	web.ServeStatic(r)

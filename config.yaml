@@ -12,8 +12,18 @@ llm_providers:
 
 # MCPs (公共配置)
 mcps:
-  - name: "example-mcp"
-    endpoint: "http://localhost:9090"
+  - name: "企业查询"
+    endpoint: "https://mcpmarket.cn/mcp/d8047e7efc5ff094c3c7b844"
+  - name: "八字查询"
+    endpoint: "https://mcpmarket.cn/mcp/f3d082aef83e49e6a87ea552"
+  - name: "新闻查询"
+    endpoint: "https://mcpmarket.cn/mcp/afa1e7ef5bd150d6c939fae7"
+  - name: "结构化推理"
+    endpoint: "https://mcpmarket.cn/mcp/cb2bddd11c86f94b662be23b"
+  - name: "麦当劳中国"
+    endpoint: "https://mcpmarket.cn/mcp/041570163eec2b891bb2a343"
+  - name: "股票金融"
+    endpoint: "https://mcpmarket.cn/mcp/670018d7a52f008aae906d4d"
 
 # Bots (机器人配置)
 bots:
@@ -26,7 +36,7 @@ bots:
     llm_max_tokens: 2048
     max_session_tokens: 4096
     skills:
-      - name: "search"
-        description: "搜索技能"
-        system_prompt: "你是一个搜索助手，可以帮助用户查找信息。"
+      - name: "gh-trending"
+        description: "使用 curl 获取 GitHub 最近一周涨星最快的 Top 10 项目，包含项目名称、地址和描述。当要求你获取github最近涨星趋势时使用。"
+        system_prompt: '---name:gh-trendingdescription:使用curl获取GitHub最近一周涨星最快的Top10项目，包含项目名称、地址和描述。当要求你获取github最近涨星趋势时使用。metadata:author:heblversion:\"1.0\"---使用`curl`获取[GitHubTrending](https://github.com/trending?since=weekly)页面，解析出最近一周涨星最快的10个仓库，按涨星数降序排列，返回项目名称、项目地址、项目描述。##用法直接运行以下命令（依赖`python3`）：```bashcurl-s\"https://github.com/trending?since=weekly\"|python3-c\"importsys,re,htmlcontent=sys.stdin.read()articles=re.findall(r''<article[^>]*class=\"Box-row\"[^>]*>(.*?)</article>'',content,re.DOTALL)print(''GitHub最近一周涨星Top10'')print(''=''*60)fori,ainenumerate(articles[:10]):title=re.search(r''<h[23][^>]*class=\"h3[^\"]*\"[^>]*>.*?<a[^>]*href=\"/([^\"]+)\"[^>]*>.*?</h[23]>'',a,re.DOTALL)repo=title.group(1)iftitleelse''N/A''desc_m=re.search(r''<p[^>]*class=\"col-9[^\"]*color-fg-muted[^\"]*\"[^>]*>(.*?)</p>'',a,re.DOTALL)desc=re.sub(r''<[^>]+>'','''',desc_m.group(1)).strip()ifdesc_melse''(无描述)''stars_all=re.findall(r''class=\"[^\"]*octicon-star[^\"]*\"[^>]*>.*?</svg>\s*([\d,]+)'',a,re.DOTALL)total=stars_all[0]iflen(stars_all)>0else''N/A''period=stars_all[1]iflen(stars_all)>1else''N/A''print(f''{i+1:2d}.{repo}'')print(f''📍https://github.com/{repo}'')print(f''📝{html.unescape(desc)}'')print(f''⭐总Stars:{total}|本周新增:{period}'')print()\"```>**注意**：GitHubTrending页面本身已按涨星速度排序（`since=weekly`），所以结果直接就是最近一周涨星最快的项目。##输出示例```GitHub最近一周涨星Top10============================================================1.NVIDIA/SkillSpector📍https://github.com/NVIDIA/SkillSpector📝SecurityscannerforAIagentskills.Detectvulnerabilities...⭐总Stars:8,352|本周新增:5,0262.iptv-org/iptv📍https://github.com/iptv-org/iptv📝CollectionofpubliclyavailableIPTVchannelsfromallovertheworld⭐总Stars:125,850|本周新增:8,035...```##依赖-`curl`-发送HTTP请求-`python3`-解析HTML（标准库，无需额外安装）'
         tools: "[]"

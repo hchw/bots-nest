@@ -5,6 +5,7 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +53,7 @@ type Config struct {
 	LLMProviders []LLMProviderConfig `yaml:"llm_providers"`
 	MCPs         []MCPConfig         `yaml:"mcps"`
 	Bots         []BotConfig         `yaml:"bots"`
+	SkillsDir    string              `yaml:"skills_dir"`
 }
 
 func Load(path string) (*Config, error) {
@@ -83,6 +85,13 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Bots == nil {
 		cfg.Bots = []BotConfig{}
+	}
+
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = "skills"
+	}
+	if env := os.Getenv("SKILLS_DIR"); env != "" {
+		cfg.SkillsDir = strings.TrimRight(env, "/")
 	}
 
 	return &cfg, nil

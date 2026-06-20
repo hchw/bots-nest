@@ -5,6 +5,7 @@ package db
 
 import (
 	"log"
+	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/config"
 
 	"gorm.io/driver/sqlite"
@@ -49,10 +50,15 @@ func SeedFromYAML(cfg *config.Config) {
 	log.Printf("已导入 %d 个 LLM Provider", len(cfg.LLMProviders))
 
 	for _, m := range cfg.MCPs {
+		tools, err := agent.NewMCPClient(m.Name, m.Endpoint).DiscoverTools()
+		if err != nil {
+			log.Printf("[MCP] %s (%s) 自动发现工具失败: %v", m.Name, m.Endpoint, err)
+		}
 		DB.Create(&MCP{
 			ID:       m.Name,
 			Name:     m.Name,
 			Endpoint: m.Endpoint,
+			Tools:    tools,
 			Enabled:  true,
 		})
 	}
