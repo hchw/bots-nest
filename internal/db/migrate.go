@@ -11,6 +11,7 @@ func Migrate() {
 		&MCP{},
 		&Bot{},
 		&Skill{},
+		&GoJudgeTool{},
 		&Session{},
 		&Message{},
 	); err != nil {

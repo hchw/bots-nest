@@ -1,0 +1,8 @@
+services:
+  go-judge:
+    image: criyle/go-judge:latest
+    ports:
+      - "5050:5050"
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

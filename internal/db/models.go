@@ -66,6 +66,20 @@ type Session struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+type GoJudgeTool struct {
+	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	BotID        string    `gorm:"not null;index" json:"bot_id"`
+	SkillID      uint      `gorm:"not null;index" json:"skill_id"`
+	Name         string    `gorm:"not null" json:"name"`
+	Language     string    `gorm:"not null" json:"language"`
+	Code         string    `gorm:"type:text" json:"code"`
+	InputParams  string    `gorm:"type:text" json:"input_params"`
+	OutputParams string    `gorm:"type:text" json:"output_params"`
+	Prompt       string    `gorm:"type:text" json:"prompt"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type Message struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	SessionKey string    `gorm:"not null;index" json:"session_key"`

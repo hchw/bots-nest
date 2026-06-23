@@ -15,6 +15,7 @@ import (
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
 	"github.com/hchw/bots-nest/internal/llm"
+	"github.com/hchw/bots-nest/internal/skilltool"
 )
 
 const DefaultSystemPrompt = "你是智能助手。"
@@ -226,6 +227,7 @@ func (m *BotManager) StartBot(botID string) error {
 			LLMMaxTokens:     maxTokens,
 			MaxSessionTokens: lm,
 			Enabled:          b.Enabled,
+			GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
 		},
 		WeCom:      wecom,
 		SkillEng:   skillEng,
@@ -460,6 +462,7 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 								tools = append(tools, skillTools...)
 							}
 						}
+						loadGoJudgeTools(b.ID, skill, &tools)
 					} else {
 						result = "未找到技能: " + skillName
 					}
@@ -667,6 +670,38 @@ func (b *BotInstance) autoCompressIfNeeded(sessionKey string, reqID string) {
 	}
 }
 
+func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
+	var dbSkill db.Skill
+	if err := db.DB.Where("bot_id = ? AND name = ?", botID, skill.Name).First(&dbSkill).Error; err != nil {
+		log.Printf("[go-judge] 未找到对应 Skill: %s", skill.Name)
+		return
+	}
+	goJudgeTools, err := skilltool.ListToolsBySkill(botID, dbSkill.ID)
+	if err != nil {
+		log.Printf("[go-judge] 加载 Tool 失败: %v", err)
+		return
+	}
+	for _, t := range goJudgeTools {
+		fnName := "gjtool__" + fmt.Sprintf("%d", t.ID)
+		desc := t.Name
+		if t.Prompt != "" {
+			desc += ": " + t.Prompt
+		}
+		desc += fmt.Sprintf(" (语言: %s)", t.Language)
+		*tools = append(*tools, llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        fnName,
+				Description: desc,
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		})
+	}
+}
+
 func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExecutor, streamFn func(string)) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -700,6 +735,42 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 		streamFn(footer)
 
 		return result.String()
+
+	case strings.HasPrefix(tc.Function.Name, "gjtool__"):
+		toolIDStr := strings.TrimPrefix(tc.Function.Name, "gjtool__")
+		var toolID uint
+		if _, err := fmt.Sscanf(toolIDStr, "%d", &toolID); err != nil {
+			return "无效的 Tool ID: " + toolIDStr
+		}
+
+		var gjt db.GoJudgeTool
+		if err := db.DB.First(&gjt, toolID).Error; err != nil {
+			return "go-judge Tool 未找到"
+		}
+
+		streamFn(fmt.Sprintf("\n\n🛠️ 执行 Tool: %s (%s)\n", gjt.Name, gjt.Language))
+
+		executor := skilltool.NewExecutor(b.Config.GoJudgeEndpoint)
+		resp, err := executor.Execute(&skilltool.ExecuteRequest{
+			Lang: gjt.Language,
+			Src:  gjt.Code,
+		})
+		if err != nil {
+			return "go-judge 执行失败: " + err.Error()
+		}
+
+		var buf strings.Builder
+		if resp.Stdout != "" {
+			buf.WriteString("stdout:\n" + resp.Stdout + "\n")
+		}
+		if resp.Stderr != "" {
+			buf.WriteString("stderr:\n" + resp.Stderr + "\n")
+		}
+		buf.WriteString(fmt.Sprintf("status: %d", resp.Status))
+		if resp.Error != "" {
+			buf.WriteString("\nerror: " + resp.Error)
+		}
+		return buf.String()
 
 	default:
 		// MCP tool format: {mcpID}__{toolName}

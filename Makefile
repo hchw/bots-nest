@@ -1,6 +1,8 @@
 .PHONY: dev build test clean
 
 dev:
+	@echo "启动 go-judge..."
+	@docker rm -f bots-nest-go-judge 2>/dev/null; docker run -d --name bots-nest-go-judge -p 5050:5050 criyle/go-judge:latest
 	@echo "启动后端..."
 	@mkdir -p .db
 	@go run ./cmd/ &

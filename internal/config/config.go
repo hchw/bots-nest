@@ -49,11 +49,12 @@ type DatabaseConfig struct {
 }
 
 type Config struct {
-	Database     DatabaseConfig      `yaml:"database"`
-	LLMProviders []LLMProviderConfig `yaml:"llm_providers"`
-	MCPs         []MCPConfig         `yaml:"mcps"`
-	Bots         []BotConfig         `yaml:"bots"`
-	SkillsDir    string              `yaml:"skills_dir"`
+	Database      DatabaseConfig      `yaml:"database"`
+	LLMProviders  []LLMProviderConfig `yaml:"llm_providers"`
+	MCPs          []MCPConfig         `yaml:"mcps"`
+	Bots          []BotConfig         `yaml:"bots"`
+	SkillsDir     string              `yaml:"skills_dir"`
+	GoJudgeEndpoint string            `yaml:"go_judge_endpoint"`
 }
 
 func Load(path string) (*Config, error) {
