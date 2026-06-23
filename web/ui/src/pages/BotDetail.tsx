@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Tabs, Spin, Alert, Typography, Table, Button, Modal, Form, Input, Switch, message, Descriptions, Tag, Popconfirm, Space } from 'antd'
 import { getBotSessions, getBotSkills, getSession, createSkill, updateSkill, deleteSkill, expireSession, deleteSession, Session, Message, Skill } from '../api'
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import ToolPanel from '../components/ToolPanel'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ToolOutlined } from '@ant-design/icons'
 
 const { Title } = Typography
 
@@ -14,6 +15,7 @@ export default function BotDetail() {
   const [error, setError] = useState<string | null>(null)
   const [skillModalOpen, setSkillModalOpen] = useState(false)
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null)
+  const [toolSkill, setToolSkill] = useState<Skill | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [skillForm] = Form.useForm()
 
@@ -180,6 +182,7 @@ export default function BotDetail() {
       title: '操作', key: 'action',
       render: (_: unknown, record: Skill) => (
         <Space>
+          <Button type="link" icon={<ToolOutlined />} onClick={() => setToolSkill(record)}>Tool</Button>
           <Button type="link" icon={<EditOutlined />} onClick={() => openEditSkill(record)}>编辑</Button>
           <Popconfirm title="确认删除此技能？" onConfirm={() => handleDeleteSkill(record.id)}>
             <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
@@ -229,9 +232,6 @@ export default function BotDetail() {
           <Form.Item name="system_prompt" label="System Prompt" rules={[{ required: true, message: '请输入 System Prompt' }]}>
             <Input.TextArea rows={4} placeholder="你是一个搜索助手..." />
           </Form.Item>
-          <Form.Item name="tools" label="Tools (JSON)">
-            <Input.TextArea rows={3} placeholder='[]' />
-          </Form.Item>
           {editingSkill && (
             <Form.Item name="enabled" label="启用" valuePropName="checked">
               <Switch />
@@ -239,6 +239,18 @@ export default function BotDetail() {
           )}
         </Form>
       </Modal>
+
+      {toolSkill && id && (
+        <Modal
+          title={`Tool 管理 - ${toolSkill.name}`}
+          open={!!toolSkill}
+          onCancel={() => setToolSkill(null)}
+          footer={null}
+          width={800}
+        >
+          <ToolPanel botId={id} skillId={toolSkill.id} />
+        </Modal>
+      )}
     </div>
   )
 }

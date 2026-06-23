@@ -12,6 +12,7 @@ import (
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
+	"github.com/hchw/bots-nest/internal/skilltool"
 	"strconv"
 	"strings"
 
@@ -56,6 +57,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.POST("/bots/:id/skills", h.createSkill)
 		api.PUT("/bots/:id/skills/:skillId", h.updateSkill)
 		api.DELETE("/bots/:id/skills/:skillId", h.deleteSkill)
+
+		toolHandler := skilltool.NewToolHandler(h.cfg.GoJudgeEndpoint)
+		toolGroup := api.Group("/bots/:id/skills/:skillId/tools")
+		toolHandler.RegisterRoutes(toolGroup)
 
 		api.GET("/sessions/:key", h.getSession)
 		api.POST("/sessions/:key/expire", h.expireSession)

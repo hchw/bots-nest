@@ -25,6 +25,9 @@ mcps:
   - name: "股票金融"
     endpoint: "https://mcpmarket.cn/mcp/670018d7a52f008aae906d4d"
 
+# go-judge 配置
+go_judge_endpoint: "http://localhost:5050"
+
 # Bots (机器人配置)
 bots:
   - name: "my-bot"

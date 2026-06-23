@@ -344,4 +344,5 @@ type BotConfig struct {
 	LLMMaxTokens     int
 	MaxSessionTokens int
 	Enabled          bool
+	GoJudgeEndpoint  string
 }

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, Form, Input, InputNumber, Select, AutoComplete, Button, message, Spin, Typography, Table, Popconfirm, Space, Tag, Modal, Switch } from 'antd'
-import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ToolOutlined } from '@ant-design/icons'
 import { getLLMProviders, getProviderModels, getBot, getBotSkills, createSkill, updateSkill, deleteSkill, updateBot, LLMProvider, Bot, Skill } from '../api'
+import ToolPanel from '../components/ToolPanel'
 
 const { Title } = Typography
 
@@ -18,6 +19,7 @@ export default function BotEdit() {
   const [skillSubmitting, setSkillSubmitting] = useState(false)
   const [skillModalOpen, setSkillModalOpen] = useState(false)
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null)
+  const [toolSkill, setToolSkill] = useState<Skill | null>(null)
   const [skillForm] = Form.useForm()
   const [form] = Form.useForm()
 
@@ -143,6 +145,7 @@ export default function BotEdit() {
       title: '操作', key: 'action',
       render: (_: unknown, record: Skill) => (
         <Space>
+          <Button type="link" icon={<ToolOutlined />} onClick={() => setToolSkill(record)}>Tool</Button>
           <Button type="link" icon={<EditOutlined />} onClick={() => openEditSkill(record)}>编辑</Button>
           <Popconfirm title="确认删除此技能？" onConfirm={() => handleDeleteSkill(record.id)}>
             <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
@@ -235,9 +238,6 @@ export default function BotEdit() {
           <Form.Item name="system_prompt" label="System Prompt" rules={[{ required: true, message: '请输入 System Prompt' }]}>
             <Input.TextArea rows={4} placeholder="你是一个搜索助手..." />
           </Form.Item>
-          <Form.Item name="tools" label="Tools (JSON)">
-            <Input.TextArea rows={3} placeholder='[]' />
-          </Form.Item>
           {editingSkill && (
             <Form.Item name="enabled" label="启用" valuePropName="checked">
               <Switch />
@@ -245,6 +245,18 @@ export default function BotEdit() {
           )}
         </Form>
       </Modal>
+
+      {toolSkill && id && (
+        <Modal
+          title={`Tool 管理 - ${toolSkill.name}`}
+          open={!!toolSkill}
+          onCancel={() => setToolSkill(null)}
+          footer={null}
+          width={800}
+        >
+          <ToolPanel botId={id} skillId={toolSkill.id} />
+        </Modal>
+      )}
     </div>
   )
 }
