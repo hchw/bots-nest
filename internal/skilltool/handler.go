@@ -64,29 +64,36 @@ func (h *ToolHandler) createTool(c *gin.Context) {
 	botID := c.Param("id")
 	skillID, _ := strconv.ParseUint(c.Param("skillId"), 10, 64)
 
-	var req struct {
-		Name         string `json:"name" binding:"required"`
-		Language     string `json:"language" binding:"required"`
-		Code         string `json:"code"`
-		InputParams  string `json:"input_params"`
-		OutputParams string `json:"output_params"`
-		Prompt       string `json:"prompt"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
-		return
-	}
+		var req struct {
+			Name         string `json:"name" binding:"required"`
+			Language     string `json:"language" binding:"required"`
+			Code         string `json:"code"`
+			InputParams  string `json:"input_params"`
+			OutputParams string `json:"output_params"`
+			Prompt       string `json:"prompt"`
+			Status       string `json:"status"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+			return
+		}
 
-	tool := db.GoJudgeTool{
-		BotID:        botID,
-		SkillID:      uint(skillID),
-		Name:         req.Name,
-		Language:     req.Language,
-		Code:         req.Code,
-		InputParams:  req.InputParams,
-		OutputParams: req.OutputParams,
-		Prompt:       req.Prompt,
-	}
+		status := req.Status
+		if status == "" {
+			status = "draft"
+		}
+
+		tool := db.GoJudgeTool{
+			BotID:        botID,
+			SkillID:      uint(skillID),
+			Name:         req.Name,
+			Language:     req.Language,
+			Code:         req.Code,
+			InputParams:  req.InputParams,
+			OutputParams: req.OutputParams,
+			Prompt:       req.Prompt,
+			Status:       status,
+		}
 	if err := CreateTool(&tool); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建失败: " + err.Error()})
 		return
@@ -99,38 +106,42 @@ func (h *ToolHandler) updateTool(c *gin.Context) {
 	skillID, _ := strconv.ParseUint(c.Param("skillId"), 10, 64)
 	toolID, _ := strconv.ParseUint(c.Param("toolId"), 10, 64)
 
-	var req struct {
-		Name         *string `json:"name"`
-		Language     *string `json:"language"`
-		Code         *string `json:"code"`
-		InputParams  *string `json:"input_params"`
-		OutputParams *string `json:"output_params"`
-		Prompt       *string `json:"prompt"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
-		return
-	}
+		var req struct {
+			Name         *string `json:"name"`
+			Language     *string `json:"language"`
+			Code         *string `json:"code"`
+			InputParams  *string `json:"input_params"`
+			OutputParams *string `json:"output_params"`
+			Prompt       *string `json:"prompt"`
+			Status       *string `json:"status"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+			return
+		}
 
-	updates := map[string]interface{}{}
-	if req.Name != nil {
-		updates["name"] = *req.Name
-	}
-	if req.Language != nil {
-		updates["language"] = *req.Language
-	}
-	if req.Code != nil {
-		updates["code"] = *req.Code
-	}
-	if req.InputParams != nil {
-		updates["input_params"] = *req.InputParams
-	}
-	if req.OutputParams != nil {
-		updates["output_params"] = *req.OutputParams
-	}
-	if req.Prompt != nil {
-		updates["prompt"] = *req.Prompt
-	}
+		updates := map[string]interface{}{}
+		if req.Name != nil {
+			updates["name"] = *req.Name
+		}
+		if req.Language != nil {
+			updates["language"] = *req.Language
+		}
+		if req.Code != nil {
+			updates["code"] = *req.Code
+		}
+		if req.InputParams != nil {
+			updates["input_params"] = *req.InputParams
+		}
+		if req.OutputParams != nil {
+			updates["output_params"] = *req.OutputParams
+		}
+		if req.Prompt != nil {
+			updates["prompt"] = *req.Prompt
+		}
+		if req.Status != nil {
+			updates["status"] = *req.Status
+		}
 
 	if err := UpdateTool(botID, uint(skillID), uint(toolID), updates); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新失败: " + err.Error()})
@@ -194,13 +205,26 @@ func (h *ToolHandler) polishTool(c *gin.Context) {
 3. 如果需要输出结果，使用 stdout 打印
 4. 代码应当健壮，包含基本的错误处理
 5. 不要使用外部库（仅使用标准库）
-6. 代码长度控制在 500 行以内`, langDisplay)
+6. 代码长度控制在 500 行以内
+7. 代码将通过 go-judge 执行系统运行，需要符合其沙箱执行环境要求`, langDisplay)
 
-	userPrompt := fmt.Sprintf(`请生成 %s 语言的代码，实现以下功能：
+	userPrompt := fmt.Sprintf(`请根据以下需求对代码进行润色和改进。
+
+当前代码：
+%s
+
+改进需求：
+%s
+
+请只返回改进后的完整代码，不要包含任何其他说明或 markdown 格式。`, tool.Code, tool.Prompt)
+
+	if tool.Code == "" {
+		userPrompt = fmt.Sprintf(`请生成 %s 语言的代码，实现以下功能：
 
 %s
 
 请只返回代码，不要包含任何其他说明或 markdown 格式。`, langDisplay, tool.Prompt)
+	}
 
 	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, bot.LLMModel)
 	llmClient.Temperature = 0.3
@@ -219,16 +243,18 @@ func (h *ToolHandler) polishTool(c *gin.Context) {
 
 	generatedCode := resp.Content
 
-	if err := UpdateTool(botID, uint(skillID), uint(toolID), map[string]interface{}{
-		"code": generatedCode,
-	}); err != nil {
-		log.Printf("保存润色后的代码失败: %v", err)
-	}
+		if err := UpdateTool(botID, uint(skillID), uint(toolID), map[string]interface{}{
+			"code":   generatedCode,
+			"status": "draft",
+		}); err != nil {
+			log.Printf("保存润色后的代码失败: %v", err)
+		}
 
-	c.JSON(http.StatusOK, gin.H{
-		"code":   generatedCode,
-		"prompt": tool.Prompt,
-	})
+		c.JSON(http.StatusOK, gin.H{
+			"code":   generatedCode,
+			"prompt": tool.Prompt,
+			"status": "draft",
+		})
 }
 
 func (h *ToolHandler) debugTool(c *gin.Context) {

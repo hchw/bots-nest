@@ -1,0 +1,10 @@
+FROM criyle/go-judge:latest
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    nodejs \
+    golang-go \
+    gcc \
+    g++ \
+    default-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*

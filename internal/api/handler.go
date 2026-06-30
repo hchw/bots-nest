@@ -12,6 +12,7 @@ import (
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
+	"github.com/hchw/bots-nest/internal/llm"
 	"github.com/hchw/bots-nest/internal/skilltool"
 	"strconv"
 	"strings"
@@ -61,6 +62,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		toolHandler := skilltool.NewToolHandler(h.cfg.GoJudgeEndpoint)
 		toolGroup := api.Group("/bots/:id/skills/:skillId/tools")
 		toolHandler.RegisterRoutes(toolGroup)
+
+		api.POST("/bots/:id/polish-code", h.polishCode)
 
 		api.GET("/sessions/:key", h.getSession)
 		api.POST("/sessions/:key/expire", h.expireSession)
@@ -198,29 +201,108 @@ func (h *Handler) listBotSkills(c *gin.Context) {
 		if err != nil {
 			log.Printf("[API] 加载内置 Skill 失败: %v", err)
 		}
-		skillMap := make(map[string]db.Skill)
 		for _, s := range builtinSkills {
-			skillMap[s.Name] = db.Skill{
-				Name:         s.Name,
-				Description:  s.Description,
-				SystemPrompt: s.SystemPrompt,
-				Tools:        s.Tools,
-				Enabled:      s.Enabled,
+			var existing db.Skill
+			result := db.DB.Where("bot_id = ? AND name = ?", botID, s.Name).First(&existing)
+			if result.Error != nil {
+				db.DB.Create(&db.Skill{
+					BotID:        botID,
+					Name:         s.Name,
+					Description:  s.Description,
+					SystemPrompt: s.SystemPrompt,
+					Tools:        s.Tools,
+					Enabled:      s.Enabled,
+				})
+			} else {
+				db.DB.Model(&existing).Updates(map[string]interface{}{
+					"description":   s.Description,
+					"system_prompt": s.SystemPrompt,
+					"tools":         s.Tools,
+				})
 			}
 		}
 
 		var dbSkills []db.Skill
 		db.DB.Where("bot_id = ?", botID).Find(&dbSkills)
-		for _, s := range dbSkills {
-			skillMap[s.Name] = s
-		}
-
-		var result []db.Skill
-		for _, s := range skillMap {
-			result = append(result, s)
-		}
-		c.JSON(http.StatusOK, result)
+		c.JSON(http.StatusOK, dbSkills)
 	}
+
+func (h *Handler) polishCode(c *gin.Context) {
+	botID := c.Param("id")
+
+	var req struct {
+		Prompt   string `json:"prompt" binding:"required"`
+		Language string `json:"language" binding:"required"`
+		Code     string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	var botRecord db.Bot
+	if err := db.DB.Where("id = ?", botID).First(&botRecord).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "机器人未找到"})
+		return
+	}
+
+	var provider db.LLMProvider
+	if err := db.DB.Where("id = ?", botRecord.LLMProviderID).First(&provider).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "LLM Provider 未找到"})
+		return
+	}
+
+	langDisplay := req.Language
+	if langDisplay == "" {
+		langDisplay = "python3"
+	}
+
+	systemPrompt := fmt.Sprintf(`你是一个专业的代码生成助手。根据用户的想法生成 %s 语言的可执行代码。
+
+要求：
+1. 代码必须是完整、可执行的，不要包含任何额外的说明文字
+2. 如果需要输入参数，使用 stdin 读取（input() 或类似方式）
+3. 如果需要输出结果，使用 stdout 打印
+4. 代码应当健壮，包含基本的错误处理
+5. 不要使用外部库（仅使用标准库）
+6. 代码长度控制在 500 行以内
+7. 代码将通过 go-judge 执行系统运行，需要符合其沙箱执行环境要求`, langDisplay)
+
+	userPrompt := fmt.Sprintf(`请根据以下需求对代码进行润色和改进。
+
+当前代码：
+%s
+
+改进需求：
+%s
+
+请只返回改进后的完整代码，不要包含任何其他说明或 markdown 格式。`, req.Code, req.Prompt)
+
+	if req.Code == "" {
+		userPrompt = fmt.Sprintf(`请生成 %s 语言的代码，实现以下功能：
+
+%s
+
+请只返回代码，不要包含任何其他说明或 markdown 格式。`, langDisplay, req.Prompt)
+	}
+
+	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, botRecord.LLMModel)
+	llmClient.Temperature = 0.3
+	if botRecord.LLMMaxTokens != nil && *botRecord.LLMMaxTokens > 0 {
+		llmClient.MaxTokens = *botRecord.LLMMaxTokens
+	}
+
+	resp, err := llmClient.Chat([]llm.ChatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "LLM 调用失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": resp.Content})
+}
 
 func (h *Handler) getSession(c *gin.Context) {
 	key := c.Param("key")

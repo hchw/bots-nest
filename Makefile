@@ -2,7 +2,7 @@
 
 dev:
 	@echo "启动 go-judge..."
-	@docker rm -f bots-nest-go-judge 2>/dev/null; docker run -d --name bots-nest-go-judge -p 5050:5050 criyle/go-judge:latest
+	@docker rm -f bots-nest-go-judge 2>/dev/null; docker run -d --name bots-nest-go-judge --privileged -p 5050:5050 criyle/go-judge:latest
 	@echo "启动后端..."
 	@mkdir -p .db
 	@go run ./cmd/ &
@@ -18,6 +18,10 @@ build:
 test:
 	@echo "运行测试..."
 	@go test ./... -v -count=1
+
+docker-build:
+	@echo "构建 Docker 镜像..."
+	docker build -t bots-nest .
 
 clean:
 	@echo "清理..."
