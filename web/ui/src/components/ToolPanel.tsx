@@ -1,13 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { Card, Button, Select, Input, message, Space, Tag, Typography, Modal } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ThunderboltOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ThunderboltOutlined, ExperimentOutlined, SaveOutlined } from '@ant-design/icons'
 import { EditorView, basicSetup } from 'codemirror'
 import { EditorState } from '@codemirror/state'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { java } from '@codemirror/lang-java'
 import { cpp } from '@codemirror/lang-cpp'
-import { getSkillTools, createSkillTool, updateSkillTool, deleteSkillTool, polishSkillTool, debugSkillTool, GoJudgeTool, DebugResult } from '../api'
+import { getSkillTools, createSkillTool, updateSkillTool, deleteSkillTool, polishCode, debugSkillTool, GoJudgeTool, DebugResult } from '../api'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -30,6 +30,7 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
   const [tools, setTools] = useState<GoJudgeTool[]>([])
   const [editingTool, setEditingTool] = useState<GoJudgeTool | null>(null)
   const [creating, setCreating] = useState(false)
+  const [wasAutoCreated, setWasAutoCreated] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -43,12 +44,27 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
   useEffect(() => { load() }, [load])
 
   const handleCreate = () => {
-    setEditingTool(null)
+    setEditingTool({
+      id: 0,
+      bot_id: botId,
+      skill_id: skillId,
+      name: '',
+      language: 'python3',
+      code: '',
+      input_params: '',
+      output_params: '',
+      prompt: '',
+      status: '',
+      created_at: '',
+      updated_at: '',
+    })
+    setWasAutoCreated(false)
     setCreating(true)
   }
 
   const handleEdit = (tool: GoJudgeTool) => {
     setEditingTool({ ...tool })
+    setWasAutoCreated(false)
     setCreating(true)
   }
 
@@ -66,10 +82,10 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
     if (!editingTool) return
     try {
       if (editingTool.id) {
-        await updateSkillTool(botId, skillId, editingTool.id, editingTool)
+        await updateSkillTool(botId, skillId, editingTool.id, { ...editingTool, status: 'enabled' })
         message.success('已保存')
       } else {
-        await createSkillTool(botId, skillId, editingTool)
+        await createSkillTool(botId, skillId, { ...editingTool, status: 'enabled' })
         message.success('已创建')
       }
       setCreating(false)
@@ -80,18 +96,17 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
     }
   }
 
-  const handlePolish = async (tool: GoJudgeTool) => {
-    if (!tool.prompt) {
-      message.warning('请先输入想法')
-      return
+  const handleCancel = async () => {
+    if (editingTool && wasAutoCreated && editingTool.id) {
+      try {
+        await deleteSkillTool(botId, skillId, editingTool.id)
+      } catch {
+        // ignore delete failure on cancel
+      }
     }
-    try {
-      const res = await polishSkillTool(botId, skillId, tool.id)
-      setEditingTool({ ...tool, code: res.data.code })
-      message.success('润色完成')
-    } catch {
-      message.error('润色失败')
-    }
+    setCreating(false)
+    setEditingTool(null)
+    setWasAutoCreated(false)
   }
 
   const handleDebug = async (tool: GoJudgeTool) => {
@@ -156,6 +171,11 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
                 <Space>
                   <Tag color="blue">{t.language}</Tag>
                   <span>{t.name}</span>
+                  {t.status === 'draft' ? (
+                    <Tag color="orange">草稿</Tag>
+                  ) : (
+                    <Tag color="green">已启用</Tag>
+                  )}
                 </Space>
               }
               extra={
@@ -183,10 +203,9 @@ export default function ToolPanel({ botId, skillId }: ToolPanelProps) {
       botId={botId}
       skillId={skillId}
       onSave={handleSave}
-      onCancel={() => { setCreating(false); setEditingTool(null) }}
-      onPolish={handlePolish}
-      onDebug={handleDebug}
+      onCancel={handleCancel}
       onChange={(t) => setEditingTool(t)}
+      onAutoCreated={() => setWasAutoCreated(true)}
     />
   )
 }
@@ -208,12 +227,11 @@ interface ToolEditorProps {
   skillId: number
   onSave: () => void
   onCancel: () => void
-  onPolish: (tool: GoJudgeTool) => void
-  onDebug: (tool: GoJudgeTool) => void
   onChange: (tool: GoJudgeTool) => void
+  onAutoCreated?: () => void
 }
 
-function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug, onChange }: ToolEditorProps) {
+function ToolEditor({ tool, botId, skillId, onSave, onCancel, onChange, onAutoCreated }: ToolEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [debugResult, setDebugResult] = useState<DebugResult | null>(null)
@@ -247,18 +265,38 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug,
     }
   }, [tool?.language])
 
+  const autoSaveDraft = async (updates: Partial<GoJudgeTool>) => {
+    if (!tool) return
+    const current = { ...tool, ...updates }
+    onChange(current)
+    if (!current.id) return
+    try {
+      await updateSkillTool(botId, skillId, current.id, updates)
+    } catch {
+      // silent fail for auto-save
+    }
+  }
+
   const handlePolish = async () => {
-    if (!tool || !tool.id) return
+    if (!tool || !tool.prompt) return
     setPolishLoading(true)
     try {
-      const res = await polishSkillTool(botId, skillId, tool.id)
+      const res = await polishCode(botId, { prompt: tool.prompt, language: tool.language || 'python3', code: tool.code || '' })
       if (viewRef.current) {
         viewRef.current.dispatch({
           changes: { from: 0, to: viewRef.current.state.doc.length, insert: res.data.code }
         })
       }
-      onChange({ ...tool, code: res.data.code })
-      message.success('润色完成')
+      const updated = { ...tool, code: res.data.code }
+      onChange(updated)
+      if (updated.id) {
+        await updateSkillTool(botId, skillId, updated.id, { code: res.data.code, prompt: tool.prompt, status: 'draft' })
+      } else {
+        const created = await createSkillTool(botId, skillId, { name: tool.name || '未命名', language: tool.language, code: res.data.code, prompt: tool.prompt, status: 'draft' })
+        onChange({ ...updated, id: created.data.id, status: 'draft' })
+        if (onAutoCreated) onAutoCreated()
+      }
+      message.success('润色完成，已自动保存草稿')
     } catch {
       message.error('润色失败')
     } finally {
@@ -266,15 +304,56 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug,
     }
   }
 
+  const handleCodeBlur = () => {
+    if (tool && tool.id && tool.code) {
+      autoSaveDraft({ code: tool.code, prompt: tool.prompt, status: 'draft' })
+    }
+  }
+
+  const handlePromptBlur = () => {
+    if (tool && tool.id && tool.prompt) {
+      autoSaveDraft({ prompt: tool.prompt, code: tool.code, status: 'draft' })
+    }
+  }
+
   const handleDebug = async () => {
-    if (!tool || !tool.id) return
+    if (!tool || !tool.code) return
+    if (!tool.id) {
+      message.warning('请先润色或保存后再调试')
+      return
+    }
     setDebugLoading(true)
     setDebugResult(null)
     try {
       const res = await debugSkillTool(botId, skillId, tool.id)
       setDebugResult(res.data)
-    } catch {
-      message.error('调试执行失败')
+
+      let debugOutput = ''
+      if (res.data.stdout) debugOutput += `stdout:\n${res.data.stdout}\n`
+      if (res.data.stderr) debugOutput += `stderr:\n${res.data.stderr}\n`
+      debugOutput += `exit code: ${res.data.status}`
+      if (res.data.error) debugOutput += `\nerror: ${res.data.error}`
+
+      const newPrompt = (tool.prompt ? tool.prompt + '\n\n' : '') + debugOutput
+      onChange({ ...tool, prompt: newPrompt })
+
+      setTimeout(() => {
+        const ta = document.getElementById('tool-prompt-textarea') as HTMLTextAreaElement | null
+        ta?.focus()
+        ta?.setSelectionRange(newPrompt.length, newPrompt.length)
+      }, 0)
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.error || err?.message || '调试执行失败'
+      message.error(errMsg)
+
+      const newPrompt = (tool.prompt ? tool.prompt + '\n\n' : '') + errMsg
+      onChange({ ...tool, prompt: newPrompt })
+
+      setTimeout(() => {
+        const ta = document.getElementById('tool-prompt-textarea') as HTMLTextAreaElement | null
+        ta?.focus()
+        ta?.setSelectionRange(newPrompt.length, newPrompt.length)
+      }, 0)
     } finally {
       setDebugLoading(false)
     }
@@ -284,9 +363,9 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug,
     setSaving(true)
     try {
       if (tool!.id) {
-        await updateSkillTool(botId, skillId, tool!.id, tool!)
+        await updateSkillTool(botId, skillId, tool!.id, { ...tool, status: 'enabled' })
       } else {
-        await createSkillTool(botId, skillId, tool!)
+        await createSkillTool(botId, skillId, { ...tool!, status: 'enabled' })
       }
       message.success('已保存')
       onSave()
@@ -315,35 +394,47 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug,
             value={tool.name}
             onChange={(e) => onChange({ ...tool, name: e.target.value })}
           />
+          {tool.status === 'draft' ? (
+            <Tag color="orange">草稿</Tag>
+          ) : tool.status === 'enabled' ? (
+            <Tag color="green">已启用</Tag>
+          ) : null}
         </Space>
 
-        <Space style={{ width: '100%', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: 8, width: '100%' }}>
           <TextArea
+            id="tool-prompt-textarea"
             placeholder="输入想法，点击润色生成代码..."
-            rows={2}
+            rows={3}
             style={{ flex: 1 }}
             value={tool.prompt}
             onChange={(e) => onChange({ ...tool, prompt: e.target.value })}
+            onBlur={handlePromptBlur}
           />
           <Button
             type="primary"
             icon={<ExperimentOutlined />}
             loading={polishLoading}
             onClick={handlePolish}
-            disabled={!tool.id || !tool.prompt}
+            disabled={!tool.prompt}
           >
             润色
           </Button>
-        </Space>
+        </div>
 
-        <div ref={editorRef} style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }} />
+        <div
+          ref={editorRef}
+          style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}
+          tabIndex={0}
+          onBlur={handleCodeBlur}
+        />
 
         <Space>
           <Button
             icon={<ThunderboltOutlined />}
             loading={debugLoading}
             onClick={handleDebug}
-            disabled={!tool.id || !tool.code}
+            disabled={!tool.code}
           >
             调试执行
           </Button>
@@ -354,7 +445,7 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onPolish, onDebug,
         )}
 
         <Space>
-          <Button type="primary" loading={saving} onClick={handleSave}>保存</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存（启用）</Button>
           <Button onClick={onCancel}>取消</Button>
         </Space>
       </Space>

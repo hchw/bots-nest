@@ -77,6 +77,7 @@ export interface GoJudgeTool {
   input_params: string
   output_params: string
   prompt: string
+  status: string
   created_at: string
   updated_at: string
 }
@@ -128,9 +129,12 @@ export const getSession = (key: string) =>
 export const expireSession = (key: string) => api.post(`/sessions/${key}/expire`)
 export const deleteSession = (key: string) => api.delete(`/sessions/${key}`)
 
+export const polishCode = (botId: string, data: { prompt: string; language: string; code?: string }) =>
+  api.post<{ code: string }>(`/bots/${botId}/polish-code`, data)
+
 export const getSkillTools = (botId: string, skillId: number) =>
   api.get<GoJudgeTool[]>(`/bots/${botId}/skills/${skillId}/tools`)
-export const createSkillTool = (botId: string, skillId: number, data: { name: string; language: string; code?: string; input_params?: string; output_params?: string; prompt?: string }) =>
+export const createSkillTool = (botId: string, skillId: number, data: { name: string; language: string; code?: string; input_params?: string; output_params?: string; prompt?: string; status?: string }) =>
   api.post<GoJudgeTool>(`/bots/${botId}/skills/${skillId}/tools`, data)
 export const updateSkillTool = (botId: string, skillId: number, toolId: number, data: any) =>
   api.put<GoJudgeTool>(`/bots/${botId}/skills/${skillId}/tools/${toolId}`, data)

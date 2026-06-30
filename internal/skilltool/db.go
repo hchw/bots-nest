@@ -19,6 +19,18 @@ func GetToolByID(botID string, skillID uint, toolID uint) (*db.GoJudgeTool, erro
 	return &tool, nil
 }
 
+func ListEnabledToolsBySkill(botID string, skillID uint) ([]db.GoJudgeTool, error) {
+	var tools []db.GoJudgeTool
+	err := db.DB.Where("bot_id = ? AND skill_id = ? AND status = ?", botID, skillID, "enabled").Find(&tools).Error
+	return tools, err
+}
+
+func ListDraftToolsBySkill(botID string, skillID uint) ([]db.GoJudgeTool, error) {
+	var tools []db.GoJudgeTool
+	err := db.DB.Where("bot_id = ? AND skill_id = ? AND status = ?", botID, skillID, "draft").Find(&tools).Error
+	return tools, err
+}
+
 func CreateTool(tool *db.GoJudgeTool) error {
 	return db.DB.Create(tool).Error
 }

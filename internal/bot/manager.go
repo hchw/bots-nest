@@ -179,10 +179,28 @@ func (m *BotManager) StartBot(botID string) error {
 	if err != nil {
 		log.Printf("[管理器] 机器人 %s 加载内置 Skill 失败: %v", b.ID, err)
 	}
-	skillMap := make(map[string]Skill)
 	for _, s := range builtinSkills {
-		skillMap[s.Name] = s
+		var existing db.Skill
+		result := db.DB.Where("bot_id = ? AND name = ?", b.ID, s.Name).First(&existing)
+		if result.Error != nil {
+			db.DB.Create(&db.Skill{
+				BotID:        b.ID,
+				Name:         s.Name,
+				Description:  s.Description,
+				SystemPrompt: s.SystemPrompt,
+				Tools:        s.Tools,
+				Enabled:      s.Enabled,
+			})
+		} else {
+			db.DB.Model(&existing).Updates(map[string]interface{}{
+				"description":  s.Description,
+				"system_prompt": s.SystemPrompt,
+				"tools":        s.Tools,
+			})
+		}
 	}
+
+	skillMap := make(map[string]Skill)
 
 	var dbSkills []db.Skill
 	db.DB.Where("bot_id = ? AND enabled = 1", b.ID).Find(&dbSkills)
@@ -676,7 +694,7 @@ func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
 		log.Printf("[go-judge] 未找到对应 Skill: %s", skill.Name)
 		return
 	}
-	goJudgeTools, err := skilltool.ListToolsBySkill(botID, dbSkill.ID)
+	goJudgeTools, err := skilltool.ListEnabledToolsBySkill(botID, dbSkill.ID)
 	if err != nil {
 		log.Printf("[go-judge] 加载 Tool 失败: %v", err)
 		return

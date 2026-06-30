@@ -76,6 +76,7 @@ type GoJudgeTool struct {
 	InputParams  string    `gorm:"type:text" json:"input_params"`
 	OutputParams string    `gorm:"type:text" json:"output_params"`
 	Prompt       string    `gorm:"type:text" json:"prompt"`
+	Status       string    `gorm:"default:draft" json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
