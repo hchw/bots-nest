@@ -142,5 +142,5 @@ export const deleteSkillTool = (botId: string, skillId: number, toolId: number) 
   api.delete(`/bots/${botId}/skills/${skillId}/tools/${toolId}`)
 export const polishSkillTool = (botId: string, skillId: number, toolId: number) =>
   api.post<{ code: string; prompt: string }>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/polish`)
-export const debugSkillTool = (botId: string, skillId: number, toolId: number) =>
-  api.post<DebugResult>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/debug`)
+export const debugSkillTool = (botId: string, skillId: number, toolId: number, data?: { language?: string; code?: string }) =>
+  api.post<DebugResult>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/debug`, data)

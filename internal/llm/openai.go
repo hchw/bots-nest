@@ -144,6 +144,11 @@ func (c *OpenAIClient) ChatStream(messages []ChatMessage, tools []ToolDefinition
 
 	if len(tools) > 0 {
 		req.Tools = tools
+		var toolNames []string
+		for _, t := range tools {
+			toolNames = append(toolNames, t.Function.Name)
+		}
+		log.Printf("[ChatStream] 发送 tools=%v", toolNames)
 	}
 	if c.Temperature != 0 {
 		req.Temperature = c.Temperature
@@ -248,6 +253,7 @@ func (c *OpenAIClient) readSSEStream(resp *http.Response, ch chan<- StreamEvent)
 		}
 
 		if choice.FinishReason != nil {
+			log.Printf("[ChatStream] finish_reason=%s", *choice.FinishReason)
 			switch *choice.FinishReason {
 			case "stop", "length":
 				ch <- StreamEvent{Done: true}
@@ -270,6 +276,9 @@ func (c *OpenAIClient) readSSEStream(resp *http.Response, ch chan<- StreamEvent)
 					}
 				}
 				ch <- StreamEvent{ToolCalls: toolCalls, Done: true}
+			default:
+				log.Printf("[ChatStream] 未处理的 finish_reason=%s", *choice.FinishReason)
+				ch <- StreamEvent{Done: true}
 			}
 		}
 	}

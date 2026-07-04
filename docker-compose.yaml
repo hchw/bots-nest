@@ -1,6 +1,6 @@
 services:
   app:
-    build: .
+    image: bots-nest:latest
     ports:
       - "8080:8080"
     environment:
@@ -11,7 +11,7 @@ services:
       - go-judge
 
   go-judge:
-    image: criyle/go-judge:latest
+    image: bots-nest-judge:latest
     ports:
       - "5050:5050"
     privileged: true

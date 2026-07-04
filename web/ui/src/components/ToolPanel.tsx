@@ -325,35 +325,11 @@ function ToolEditor({ tool, botId, skillId, onSave, onCancel, onChange, onAutoCr
     setDebugLoading(true)
     setDebugResult(null)
     try {
-      const res = await debugSkillTool(botId, skillId, tool.id)
+      const res = await debugSkillTool(botId, skillId, tool.id, { language: tool.language, code: tool.code })
       setDebugResult(res.data)
-
-      let debugOutput = ''
-      if (res.data.stdout) debugOutput += `stdout:\n${res.data.stdout}\n`
-      if (res.data.stderr) debugOutput += `stderr:\n${res.data.stderr}\n`
-      debugOutput += `exit code: ${res.data.status}`
-      if (res.data.error) debugOutput += `\nerror: ${res.data.error}`
-
-      const newPrompt = (tool.prompt ? tool.prompt + '\n\n' : '') + debugOutput
-      onChange({ ...tool, prompt: newPrompt })
-
-      setTimeout(() => {
-        const ta = document.getElementById('tool-prompt-textarea') as HTMLTextAreaElement | null
-        ta?.focus()
-        ta?.setSelectionRange(newPrompt.length, newPrompt.length)
-      }, 0)
     } catch (err: any) {
       const errMsg = err?.response?.data?.error || err?.message || '调试执行失败'
       message.error(errMsg)
-
-      const newPrompt = (tool.prompt ? tool.prompt + '\n\n' : '') + errMsg
-      onChange({ ...tool, prompt: newPrompt })
-
-      setTimeout(() => {
-        const ta = document.getElementById('tool-prompt-textarea') as HTMLTextAreaElement | null
-        ta?.focus()
-        ta?.setSelectionRange(newPrompt.length, newPrompt.length)
-      }, 0)
     } finally {
       setDebugLoading(false)
     }

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hchw/bots-nest/internal/db"
@@ -201,7 +202,9 @@ func (h *ToolHandler) polishTool(c *gin.Context) {
 
 要求：
 1. 代码必须是完整、可执行的，不要包含任何额外的说明文字
-2. 如果需要输入参数，使用 stdin 读取（input() 或类似方式）
+	2. 输入参数支持两种方式（优先用 CLI 参数方式），最多支持 32 个参数（value1~value32）：
+   - CLI 参数：从 os.Args（Go）/ sys.argv（Python）/ process.argv（Node）等依次读取
+   - stdin JSON：格式为 {"value1":"...", "value2":"..."}，需要解析 JSON
 3. 如果需要输出结果，使用 stdout 打印
 4. 代码应当健壮，包含基本的错误处理
 5. 不要使用外部库（仅使用标准库）
@@ -241,7 +244,7 @@ func (h *ToolHandler) polishTool(c *gin.Context) {
 		return
 	}
 
-	generatedCode := resp.Content
+	generatedCode := stripCodeFences(resp.Content)
 
 		if err := UpdateTool(botID, uint(skillID), uint(toolID), map[string]interface{}{
 			"code":   generatedCode,
@@ -262,20 +265,44 @@ func (h *ToolHandler) debugTool(c *gin.Context) {
 	skillID, _ := strconv.ParseUint(c.Param("skillId"), 10, 64)
 	toolID, _ := strconv.ParseUint(c.Param("toolId"), 10, 64)
 
-	tool, err := GetToolByID(botID, uint(skillID), uint(toolID))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Tool 未找到"})
-		return
+	lang := ""
+	code := ""
+
+	var req struct {
+		Language *string `json:"language"`
+		Code     *string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err == nil {
+		if req.Language != nil {
+			lang = *req.Language
+		}
+		if req.Code != nil {
+			code = *req.Code
+		}
 	}
 
-	if tool.Code == "" {
+	if lang == "" || code == "" {
+		tool, err := GetToolByID(botID, uint(skillID), uint(toolID))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tool 未找到"})
+			return
+		}
+		if lang == "" {
+			lang = tool.Language
+		}
+		if code == "" {
+			code = tool.Code
+		}
+	}
+
+	if code == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请先编写代码"})
 		return
 	}
 
 	result, err := h.executor.Execute(&ExecuteRequest{
-		Lang: tool.Language,
-		Src:  tool.Code,
+		Lang: lang,
+		Src:  code,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "执行失败: " + err.Error()})
@@ -283,4 +310,19 @@ func (h *ToolHandler) debugTool(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func stripCodeFences(code string) string {
+	code = strings.TrimSpace(code)
+	if strings.HasPrefix(code, "```") {
+		if idx := strings.Index(code[3:], "\n"); idx >= 0 {
+			code = code[3+idx+1:]
+		} else {
+			code = code[3:]
+		}
+	}
+	if strings.HasSuffix(code, "```") {
+		code = code[:len(code)-3]
+	}
+	return strings.TrimSpace(code)
 }

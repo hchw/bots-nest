@@ -301,7 +301,22 @@ func (h *Handler) polishCode(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": resp.Content})
+	c.JSON(http.StatusOK, gin.H{"code": stripCodeFences(resp.Content)})
+}
+
+func stripCodeFences(code string) string {
+	code = strings.TrimSpace(code)
+	if strings.HasPrefix(code, "```") {
+		if idx := strings.Index(code[3:], "\n"); idx >= 0 {
+			code = code[3+idx+1:]
+		} else {
+			code = code[3:]
+		}
+	}
+	if strings.HasSuffix(code, "```") {
+		code = code[:len(code)-3]
+	}
+	return strings.TrimSpace(code)
 }
 
 func (h *Handler) getSession(c *gin.Context) {

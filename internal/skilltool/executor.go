@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 )
 
 type ExecuteRequest struct {
-	Lang  string `json:"lang"`
-	Src   string `json:"src"`
-	Stdin string `json:"stdin,omitempty"`
+	Lang  string   `json:"lang"`
+	Src   string   `json:"src"`
+	Stdin string   `json:"stdin,omitempty"`
+	Args  []string `json:"args,omitempty"`
 }
 
 type ExecuteResponse struct {
@@ -30,24 +32,27 @@ type Executor struct {
 func NewExecutor(endpoint string) *Executor {
 	return &Executor{
 		endpoint: endpoint,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
 type judgeFile struct {
 	Content *string `json:"content,omitempty"`
+	FileID  *string `json:"fileId,omitempty"`
 	Name    *string `json:"name,omitempty"`
 	Max     *int64  `json:"max,omitempty"`
 }
 
 type judgeCmd struct {
-	Args        []string              `json:"args"`
-	Env         []string              `json:"env"`
-	Files       []judgeFile           `json:"files"`
-	CPULimit    uint64                `json:"cpuLimit"`
-	MemoryLimit uint64                `json:"memoryLimit"`
-	ProcLimit   uint64                `json:"procLimit"`
-	CopyIn      map[string]judgeFile  `json:"copyIn,omitempty"`
+	Args          []string              `json:"args"`
+	Env           []string              `json:"env"`
+	Files         []judgeFile           `json:"files"`
+	CPULimit      uint64                `json:"cpuLimit"`
+	MemoryLimit   uint64                `json:"memoryLimit"`
+	ProcLimit     uint64                `json:"procLimit"`
+	CopyIn        map[string]judgeFile  `json:"copyIn,omitempty"`
+	CopyOut       []string              `json:"copyOut,omitempty"`
+	CopyOutCached []string              `json:"copyOutCached,omitempty"`
 }
 
 type judgeRequest struct {
@@ -59,6 +64,7 @@ type judgeResult struct {
 	ExitStatus int               `json:"exitStatus"`
 	Error      string            `json:"error,omitempty"`
 	Files      map[string]string `json:"files,omitempty"`
+	FileIds    map[string]string `json:"fileIds,omitempty"`
 }
 
 type judgeResponse []judgeResult
@@ -68,6 +74,7 @@ type langConfig struct {
 	compileArgs []string
 	runArgs     []string
 	needCompile bool
+	binaryName  string
 }
 
 var supportedLangs = map[string]langConfig{
@@ -84,18 +91,21 @@ var supportedLangs = map[string]langConfig{
 		compileArgs: []string{"go", "build", "-o", "prog", "main.go"},
 		runArgs:     []string{"./prog"},
 		needCompile: true,
+		binaryName:  "prog",
 	},
 	"c": {
 		srcName:     "prog.c",
 		compileArgs: []string{"gcc", "-O2", "-Wall", "prog.c", "-o", "prog"},
 		runArgs:     []string{"./prog"},
 		needCompile: true,
+		binaryName:  "prog",
 	},
 	"cpp": {
 		srcName:     "prog.cpp",
 		compileArgs: []string{"g++", "-O2", "-Wall", "prog.cpp", "-o", "prog"},
 		runArgs:     []string{"./prog"},
 		needCompile: true,
+		binaryName:  "prog",
 	},
 	"java": {
 		srcName:     "Main.java",
@@ -120,46 +130,8 @@ func buildFiles(stdin string) []judgeFile {
 	}
 }
 
-func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
-	cfg, ok := supportedLangs[req.Lang]
-	if !ok {
-		return nil, fmt.Errorf("不支持的语言: %s", req.Lang)
-	}
-
-	env := []string{"PATH=/usr/bin:/usr/local/bin:/usr/lib/jvm/java-11-openjdk/bin:/usr/local/go/bin"}
-
-	common := judgeCmd{
-		Env:         env,
-		Files:       buildFiles(req.Stdin),
-		CPULimit:    10000000000,
-		MemoryLimit: 268435456,
-		ProcLimit:   50,
-	}
-
-	var cmds []judgeCmd
-
-	if cfg.needCompile {
-		compileCmd := common
-		compileCmd.Args = cfg.compileArgs
-		compileCmd.CopyIn = map[string]judgeFile{
-			cfg.srcName: {Content: strPtr(req.Src)},
-		}
-		cmds = append(cmds, compileCmd)
-
-		runCmd := common
-		runCmd.Args = cfg.runArgs
-		cmds = append(cmds, runCmd)
-	} else {
-		runCmd := common
-		runCmd.Args = cfg.runArgs
-		runCmd.CopyIn = map[string]judgeFile{
-			cfg.srcName: {Content: strPtr(req.Src)},
-		}
-		cmds = append(cmds, runCmd)
-	}
-
+func (e *Executor) sendRequest(cmds []judgeCmd) (judgeResponse, error) {
 	judgeReq := judgeRequest{Cmd: cmds}
-
 	body, err := json.Marshal(judgeReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -195,6 +167,29 @@ func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
 		return nil, fmt.Errorf("empty response from go-judge")
 	}
 
+	return judgeResp, nil
+}
+
+func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
+	cfg, ok := supportedLangs[req.Lang]
+	if !ok {
+		return nil, fmt.Errorf("不支持的语言: %s", req.Lang)
+	}
+
+	env := []string{
+		"PATH=/usr/bin:/usr/local/bin:/usr/lib/jvm/java-11-openjdk/bin:/usr/local/go/bin",
+		"GOCACHE=/tmp/gocache",
+		"HOME=/tmp",
+	}
+
+	common := judgeCmd{
+		Env:         env,
+		Files:       buildFiles(req.Stdin),
+		CPULimit:    30000000000,
+		MemoryLimit: 536870912,
+		ProcLimit:   300,
+	}
+
 	buildExecResp := func(r judgeResult) *ExecuteResponse {
 		out := &ExecuteResponse{
 			Status: r.ExitStatus,
@@ -207,19 +202,103 @@ func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
 		return out
 	}
 
-	if cfg.needCompile && len(judgeResp) >= 2 {
-		compileResult := judgeResp[0]
-		runResult := judgeResp[1]
+	if cfg.needCompile && cfg.binaryName != "" {
+		// Step 1: Compile with CopyOutCached to persist the binary
+		compileCmd := common
+		compileCmd.Args = cfg.compileArgs
+		compileCmd.CopyIn = map[string]judgeFile{
+			cfg.srcName: {Content: strPtr(req.Src)},
+		}
+		compileCmd.CopyOutCached = []string{cfg.binaryName}
+
+		compileResp, err := e.sendRequest([]judgeCmd{compileCmd})
+		if err != nil {
+			return nil, err
+		}
+
+		compileResult := compileResp[0]
+		log.Printf("[go-judge] compile exitStatus=%d fileIds=%v error=%s", compileResult.ExitStatus, compileResult.FileIds, compileResult.Error)
 
 		if compileResult.ExitStatus != 0 && compileResult.ExitStatus != -1 {
 			return buildExecResp(compileResult), nil
 		}
+
+		fileID := ""
+		if compileResult.FileIds != nil {
+			fileID = compileResult.FileIds[cfg.binaryName]
+		}
+		if fileID == "" {
+			log.Printf("[go-judge] fileID empty for %s, skipping run step", cfg.binaryName)
+			return buildExecResp(compileResult), nil
+		}
+
+		// Step 2: Run with the cached binary via FileID
+		runCmd := common
+		runCmd.Args = append(cfg.runArgs, req.Args...)
+		runCmd.CopyIn = map[string]judgeFile{
+			cfg.binaryName: {FileID: &fileID},
+		}
+
+		runResp, err := e.sendRequest([]judgeCmd{runCmd})
+		if err != nil {
+			return nil, err
+		}
+
+		runResult := runResp[0]
+		log.Printf("[go-judge] run exitStatus=%d files=%v error=%s", runResult.ExitStatus, runResult.Files, runResult.Error)
 
 		respOut := buildExecResp(runResult)
 		if respOut.Stderr == "" && compileResult.Files != nil {
 			respOut.Stderr = compileResult.Files["stderr"]
 		}
 		return respOut, nil
+	}
+
+	if cfg.needCompile {
+		// Compiled languages without binaryName (e.g., Java):
+		// Keep old behavior — send both commands in one request
+		compileCmd := common
+		compileCmd.Args = cfg.compileArgs
+		compileCmd.CopyIn = map[string]judgeFile{
+			cfg.srcName: {Content: strPtr(req.Src)},
+		}
+
+		runCmd := common
+		runCmd.Args = append(cfg.runArgs, req.Args...)
+
+		judgeResp, err := e.sendRequest([]judgeCmd{compileCmd, runCmd})
+		if err != nil {
+			return nil, err
+		}
+
+		if len(judgeResp) >= 2 {
+			compileResult := judgeResp[0]
+			runResult := judgeResp[1]
+
+			if compileResult.ExitStatus != 0 && compileResult.ExitStatus != -1 {
+				return buildExecResp(compileResult), nil
+			}
+
+			respOut := buildExecResp(runResult)
+			if respOut.Stderr == "" && compileResult.Files != nil {
+				respOut.Stderr = compileResult.Files["stderr"]
+			}
+			return respOut, nil
+		}
+
+		return buildExecResp(judgeResp[len(judgeResp)-1]), nil
+	}
+
+	// Interpreted languages: single request
+	runCmd := common
+	runCmd.Args = append(cfg.runArgs, req.Args...)
+	runCmd.CopyIn = map[string]judgeFile{
+		cfg.srcName: {Content: strPtr(req.Src)},
+	}
+
+	judgeResp, err := e.sendRequest([]judgeCmd{runCmd})
+	if err != nil {
+		return nil, err
 	}
 
 	return buildExecResp(judgeResp[len(judgeResp)-1]), nil
