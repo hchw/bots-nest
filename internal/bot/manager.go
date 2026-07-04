@@ -193,9 +193,9 @@ func (m *BotManager) StartBot(botID string) error {
 			})
 		} else {
 			db.DB.Model(&existing).Updates(map[string]interface{}{
-				"description":  s.Description,
+				"description":   s.Description,
 				"system_prompt": s.SystemPrompt,
-				"tools":        s.Tools,
+				"tools":         s.Tools,
 			})
 		}
 	}
@@ -422,10 +422,13 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 	}
 
 	writeDisplay("🤔 思考中...\n")
+	log.Printf("[loop] 开始循环, maxIterations=%d, msgs=%d, tools=%d", maxIterations, len(msgs), len(tools))
 
 	for iter := 0; iter < maxIterations; iter++ {
+		log.Printf("[loop] iter=%d/10 开始 ChatStream msgs=%d tools=%d", iter, len(msgs), len(tools))
 		eventCh, err := llmClient.ChatStream(msgs, tools)
 		if err != nil {
+			log.Printf("[loop] iter=%d ChatStream 出错: %v", iter, err)
 			writeDisplay("\n处理出错: " + err.Error())
 			flushDisplay(true)
 			return fmt.Errorf("LLM 流式调用失败: %w", err)
@@ -434,6 +437,7 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 		var contentBuf strings.Builder
 		var toolCalls []llm.ToolCall
 
+		log.Printf("[loop] iter=%d 开始读取流", iter)
 		for event := range eventCh {
 			if event.Content != "" {
 				contentBuf.WriteString(event.Content)
@@ -448,7 +452,14 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 		}
 
 		if len(toolCalls) > 0 {
+			var names []string
+			for _, tc := range toolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			log.Printf("[loop] iter=%d 收到 tool 调用: %v, content=%q", iter, names, contentBuf.String())
 			flushDisplay(false)
+		} else {
+			log.Printf("[loop] iter=%d 无 tool 调用, content=%q, 结束循环", iter, contentBuf.String())
 		}
 
 		if len(toolCalls) == 0 {
@@ -470,8 +481,10 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 				var args map[string]interface{}
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					result = "参数解析失败: " + err.Error()
+					log.Printf("[loop] iter=%d activate_skill 参数解析失败: %v", iter, err)
 				} else {
 					skillName, _ := args["skill_name"].(string)
+					log.Printf("[loop] iter=%d activate_skill skill=%s", iter, skillName)
 					if skill := b.SkillEng.Lookup(b.ID, skillName); skill != nil {
 						result = skill.SystemPrompt
 						if skill.Tools != "" {
@@ -481,14 +494,18 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 							}
 						}
 						loadGoJudgeTools(b.ID, skill, &tools)
+						log.Printf("[loop] iter=%d activate_skill 完成, tools现在有 %d 个", iter, len(tools))
 					} else {
 						result = "未找到技能: " + skillName
+						log.Printf("[loop] iter=%d 未找到技能: %s", iter, skillName)
 					}
 				}
 			} else {
+				log.Printf("[loop] iter=%d 执行 tool: %s args=%s", iter, tc.Function.Name, tc.Function.Arguments)
 				result = b.executeToolCall(tc, shellExec, func(chunk string) {
 					writeDisplay(chunk)
 				})
+				log.Printf("[loop] iter=%d tool %s 结果: %s", iter, tc.Function.Name, result)
 			}
 			msgs = append(msgs, llm.ChatMessage{
 				Role:       "tool",
@@ -500,7 +517,9 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 
 	if finalReply == "" {
 		finalReply = "抱歉，处理超时，请重试"
+		log.Printf("[loop] 超时, 结束")
 	}
+	log.Printf("[loop] 最终回复: %s", finalReply)
 
 	// Send final finish signal (flushes remaining content if any)
 	flushDisplay(true)
@@ -686,6 +705,7 @@ func (b *BotInstance) autoCompressIfNeeded(sessionKey string, reqID string) {
 	if err := b.WeCom.SendReply(reqID, notifyContent); err != nil {
 		log.Printf("自动压缩通知发送失败: %v", err)
 	}
+
 }
 
 func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
@@ -699,24 +719,39 @@ func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
 		log.Printf("[go-judge] 加载 Tool 失败: %v", err)
 		return
 	}
+	log.Printf("[go-judge] 加载 %d 个 Tool (skill=%s)", len(goJudgeTools), skill.Name)
 	for _, t := range goJudgeTools {
 		fnName := "gjtool__" + fmt.Sprintf("%d", t.ID)
+		log.Printf("[go-judge] 添加 Tool: name=%s fn=%s", t.Name, fnName)
 		desc := t.Name
 		if t.Prompt != "" {
 			desc += ": " + t.Prompt
 		}
 		desc += fmt.Sprintf(" (语言: %s)", t.Language)
+		params := buildToolParams(t.InputParams)
 		*tools = append(*tools, llm.ToolDefinition{
 			Type: "function",
 			Function: llm.FunctionDef{
 				Name:        fnName,
 				Description: desc,
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{},
-				},
+				Parameters:  params,
 			},
 		})
+	}
+}
+
+func buildToolParams(inputParams string) map[string]interface{} {
+	properties := make(map[string]interface{})
+	for i := 1; i <= 32; i++ {
+		key := fmt.Sprintf("value%d", i)
+		properties[key] = map[string]interface{}{
+			"type":        "string",
+			"description": fmt.Sprintf("第 %d 个参数", i),
+		}
+	}
+	return map[string]interface{}{
+		"type": "object",
+		"properties": properties,
 	}
 }
 
@@ -768,10 +803,28 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 
 		streamFn(fmt.Sprintf("\n\n🛠️ 执行 Tool: %s (%s)\n", gjt.Name, gjt.Language))
 
+		var cliArgs []string
+		for i := 1; i <= 32; i++ {
+			key := fmt.Sprintf("value%d", i)
+			if v, ok := args[key].(string); ok {
+				cliArgs = append(cliArgs, v)
+			}
+		}
+
+		stdinContent := ""
+		if len(args) > 0 {
+			argsJSON, err := json.Marshal(args)
+			if err == nil {
+				stdinContent = string(argsJSON)
+			}
+		}
+
 		executor := skilltool.NewExecutor(b.Config.GoJudgeEndpoint)
 		resp, err := executor.Execute(&skilltool.ExecuteRequest{
-			Lang: gjt.Language,
-			Src:  gjt.Code,
+			Lang:  gjt.Language,
+			Src:   gjt.Code,
+			Stdin: stdinContent,
+			Args:  cliArgs,
 		})
 		if err != nil {
 			return "go-judge 执行失败: " + err.Error()
