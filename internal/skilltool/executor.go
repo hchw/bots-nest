@@ -2,13 +2,17 @@ package skilltool
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
+
+var binaryCache sync.Map
 
 type ExecuteRequest struct {
 	Lang  string   `json:"lang"`
@@ -118,6 +122,11 @@ var supportedLangs = map[string]langConfig{
 func strPtr(s string) *string { return &s }
 func int64Ptr(v int64) *int64 { return &v }
 
+func srcHash(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", h[:16])
+}
+
 func buildFiles(stdin string) []judgeFile {
 	maxStdout := int64(10485760)
 	nameStdout := "stdout"
@@ -203,7 +212,26 @@ func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
 	}
 
 	if cfg.needCompile && cfg.binaryName != "" {
-		// Step 1: Compile with CopyOutCached to persist the binary
+		hash := srcHash(req.Src)
+
+		if cachedFileID, ok := binaryCache.Load(hash); ok {
+			fileID := cachedFileID.(string)
+			log.Printf("[go-judge] cache hit lang=%s hash=%s", req.Lang, hash[:12])
+
+			runCmd := common
+			runCmd.Args = append(cfg.runArgs, req.Args...)
+			runCmd.CopyIn = map[string]judgeFile{
+				cfg.binaryName: {FileID: &fileID},
+			}
+
+			runResp, err := e.sendRequest([]judgeCmd{runCmd})
+			if err != nil {
+				return nil, err
+			}
+
+			return buildExecResp(runResp[0]), nil
+		}
+
 		compileCmd := common
 		compileCmd.Args = cfg.compileArgs
 		compileCmd.CopyIn = map[string]judgeFile{
@@ -232,7 +260,8 @@ func (e *Executor) Execute(req *ExecuteRequest) (*ExecuteResponse, error) {
 			return buildExecResp(compileResult), nil
 		}
 
-		// Step 2: Run with the cached binary via FileID
+		binaryCache.Store(hash, fileID)
+
 		runCmd := common
 		runCmd.Args = append(cfg.runArgs, req.Args...)
 		runCmd.CopyIn = map[string]judgeFile{

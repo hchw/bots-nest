@@ -460,42 +460,103 @@ func (h *Handler) deleteLLMProvider(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
-func autoDiscoverTools(endpoint string) string {
+func autoDiscoverTools(mcpType, endpoint string, command string, args []string) (string, error) {
+	if mcpType == "command" {
+		client := agent.NewLocalMCPClient("discovery", command, args)
+		result, err := client.DiscoverTools()
+		if err != nil {
+			log.Printf("[MCP] DiscoverTools 失败 command=%s: %v", command, err)
+			return "[]", err
+		}
+		log.Printf("[MCP] DiscoverTools 成功 command=%s: %s", command, result)
+		return result, nil
+	}
 	client := agent.NewMCPClient("discovery", endpoint)
 	result, err := client.DiscoverTools()
 	if err != nil {
 		log.Printf("[MCP] DiscoverTools 失败 %s: %v", endpoint, err)
-		return "[]"
+		return "[]", err
 	}
 	log.Printf("[MCP] DiscoverTools 成功 %s: %s", endpoint, result)
-	return result
+	return result, nil
 }
 
 func (h *Handler) createMCP(c *gin.Context) {
 	var req struct {
-		ID       string `json:"id" binding:"required"`
-		Name     string `json:"name" binding:"required"`
-		Endpoint string `json:"endpoint" binding:"required"`
+		ID       string   `json:"id" binding:"required"`
+		Name     string   `json:"name" binding:"required"`
+		Type     string   `json:"type"`
+		Endpoint string   `json:"endpoint"`
+		Command  string   `json:"command"`
+		Args     []string `json:"args"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
 		return
 	}
 
-	endpoint := strings.TrimRight(req.Endpoint, "/")
-	tools := autoDiscoverTools(endpoint)
-	mcp := db.MCP{
-		ID:       req.ID,
-		Name:     req.Name,
-		Endpoint: endpoint,
-		Tools:    tools,
-		Enabled:  true,
+	if req.Type == "" {
+		req.Type = "url"
 	}
+
+	var (
+		mcp       db.MCP
+		discErr   string
+	)
+	switch req.Type {
+	case "command":
+		if req.Command == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "command 类型必须提供 command 字段"})
+			return
+		}
+		argsStr := ""
+		if len(req.Args) > 0 {
+			data, _ := json.Marshal(req.Args)
+			argsStr = string(data)
+		}
+		tools, err := autoDiscoverTools("command", "", req.Command, req.Args)
+		if err != nil {
+			discErr = err.Error()
+		}
+		mcp = db.MCP{
+			ID:      req.ID,
+			Name:    req.Name,
+			Type:    "command",
+			Command: req.Command,
+			Args:    argsStr,
+			Tools:   tools,
+			Enabled: true,
+		}
+	default:
+		if req.Endpoint == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "url 类型必须提供 endpoint 字段"})
+			return
+		}
+		endpoint := strings.TrimRight(req.Endpoint, "/")
+		tools, err := autoDiscoverTools("url", endpoint, "", nil)
+		if err != nil {
+			discErr = err.Error()
+		}
+		mcp = db.MCP{
+			ID:       req.ID,
+			Name:     req.Name,
+			Type:     "url",
+			Endpoint: endpoint,
+			Tools:    tools,
+			Enabled:  true,
+		}
+	}
+
 	if err := db.DB.Create(&mcp).Error; err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "创建失败: " + err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, mcp)
+
+	resp := gin.H{"mcp": mcp}
+	if discErr != "" {
+		resp["warning"] = "工具自动发现失败: " + discErr
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 func (h *Handler) updateMCP(c *gin.Context) {
@@ -507,23 +568,51 @@ func (h *Handler) updateMCP(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string `json:"name"`
-		Endpoint string `json:"endpoint"`
-		Enabled  *bool  `json:"enabled"`
+		Name     string   `json:"name"`
+		Type     string   `json:"type"`
+		Endpoint string   `json:"endpoint"`
+		Command  string   `json:"command"`
+		Args     []string `json:"args"`
+		Enabled  *bool    `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
 		return
 	}
 
+	var discErr string
 	updates := map[string]interface{}{}
 	if req.Name != "" {
 		updates["name"] = req.Name
 	}
+	if req.Type != "" {
+		updates["type"] = req.Type
+	}
 	if req.Endpoint != "" {
 		endpoint := strings.TrimRight(req.Endpoint, "/")
 		updates["endpoint"] = endpoint
-		updates["tools"] = autoDiscoverTools(endpoint)
+		updates["command"] = ""
+		updates["args"] = ""
+		tools, err := autoDiscoverTools("url", endpoint, "", nil)
+		if err != nil {
+			discErr = err.Error()
+		}
+		updates["tools"] = tools
+	}
+	if req.Command != "" {
+		updates["command"] = req.Command
+		updates["endpoint"] = ""
+		argsStr := ""
+		if len(req.Args) > 0 {
+			data, _ := json.Marshal(req.Args)
+			argsStr = string(data)
+		}
+		updates["args"] = argsStr
+		tools, err := autoDiscoverTools("command", "", req.Command, req.Args)
+		if err != nil {
+			discErr = err.Error()
+		}
+		updates["tools"] = tools
 	}
 	if req.Enabled != nil {
 		updates["enabled"] = *req.Enabled
@@ -534,7 +623,12 @@ func (h *Handler) updateMCP(c *gin.Context) {
 		return
 	}
 	db.DB.Where("id = ?", id).First(&mcp)
-	c.JSON(http.StatusOK, mcp)
+
+	resp := gin.H{"mcp": mcp}
+	if discErr != "" {
+		resp["warning"] = "工具自动发现失败: " + discErr
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) deleteMCP(c *gin.Context) {

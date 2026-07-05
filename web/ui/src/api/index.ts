@@ -17,7 +17,10 @@ export interface LLMProvider {
 export interface MCP {
   id: string
   name: string
+  type: string
   endpoint: string
+  command: string
+  args: string
   tools: string
   enabled: boolean
   created_at: string
@@ -99,7 +102,7 @@ export const deleteLLMProvider = (id: string) =>
   api.delete(`/llm-providers/${id}`)
 
 export const getMCPs = () => api.get<MCP[]>('/mcps')
-export const createMCP = (data: { id: string; name: string; endpoint: string }) =>
+export const createMCP = (data: { id: string; name: string; type?: string; endpoint?: string; command?: string; args?: string[] }) =>
   api.post<MCP>('/mcps', data)
 export const updateMCP = (id: string, data: Partial<MCP>) =>
   api.put<MCP>(`/mcps/${id}`, data)
