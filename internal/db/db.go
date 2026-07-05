@@ -4,7 +4,10 @@
 package db
 
 import (
+	"encoding/json"
 	"log"
+	"strings"
+
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/config"
 
@@ -50,14 +53,42 @@ func SeedFromYAML(cfg *config.Config) {
 	log.Printf("已导入 %d 个 LLM Provider", len(cfg.LLMProviders))
 
 	for _, m := range cfg.MCPs {
-		tools, err := agent.NewMCPClient(m.Name, m.Endpoint).DiscoverTools()
-		if err != nil {
-			log.Printf("[MCP] %s (%s) 自动发现工具失败: %v", m.Name, m.Endpoint, err)
+		mcpType := "url"
+		endpoint := m.Endpoint
+		command := m.Command
+		var args []string
+		var tools string
+		if m.Command != "" {
+			mcpType = "command"
+			if m.Args != "" {
+				args = strings.Split(m.Args, " ")
+			}
+			client := agent.NewLocalMCPClient(m.Name, m.Command, args)
+			t, err := client.DiscoverTools()
+			if err != nil {
+				log.Printf("[MCP] %s (%s) 自动发现工具失败: %v", m.Name, m.Command, err)
+			}
+			tools = t
+		} else {
+			client := agent.NewMCPClient(m.Name, m.Endpoint)
+			t, err := client.DiscoverTools()
+			if err != nil {
+				log.Printf("[MCP] %s (%s) 自动发现工具失败: %v", m.Name, m.Endpoint, err)
+			}
+			tools = t
+		}
+		argsStr := ""
+		if len(args) > 0 {
+			data, _ := json.Marshal(args)
+			argsStr = string(data)
 		}
 		DB.Create(&MCP{
 			ID:       m.Name,
 			Name:     m.Name,
-			Endpoint: m.Endpoint,
+			Type:     mcpType,
+			Endpoint: endpoint,
+			Command:  command,
+			Args:     argsStr,
 			Tools:    tools,
 			Enabled:  true,
 		})

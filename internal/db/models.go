@@ -21,7 +21,10 @@ type LLMProvider struct {
 type MCP struct {
 	ID        string    `gorm:"primaryKey;size:255" json:"id"`
 	Name      string    `gorm:"not null" json:"name"`
-	Endpoint  string    `gorm:"not null" json:"endpoint"`
+	Type      string    `gorm:"default:url" json:"type"`
+	Endpoint  string    `gorm:"default:''" json:"endpoint"`
+	Command   string    `gorm:"default:''" json:"command"`
+	Args      string    `gorm:"default:''" json:"args"`
 	Tools     string    `gorm:"type:text" json:"tools"`
 	Enabled   bool      `gorm:"default:1" json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`

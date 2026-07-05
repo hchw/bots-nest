@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Card, Spin, Empty, Alert, Typography, Tag, Row, Col, Button, Modal, Form, Input, Switch, message, Popconfirm } from 'antd'
-import { CheckCircleOutlined, StopOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { Card, Spin, Empty, Alert, Typography, Tag, Row, Col, Button, Modal, Form, Input, Switch, message, Popconfirm, Radio, Select } from 'antd'
+import { CheckCircleOutlined, StopOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LinkOutlined, CodeOutlined } from '@ant-design/icons'
 import { getMCPs, createMCP, updateMCP, deleteMCP, MCP } from '../api'
 
-const { Title } = Typography
+const { Title, Text } = Typography
+const { TextArea } = Input
+
+const COMMAND_TEMPLATES = [
+  { label: '文件系统 MCP', command: 'npx', args: '-y @modelcontextprotocol/server-filesystem /path' },
+  { label: 'GitHub MCP', command: 'npx', args: '-y @modelcontextprotocol/server-github' },
+  { label: 'SQLite MCP', command: 'python', args: '-m mcp_server_sqlite --db-path /path/to/db' },
+  { label: 'Docker MCP', command: 'docker', args: 'run -i --rm mcp/server-mcp' },
+]
 
 export default function MCPs() {
   const [mcps, setMCPs] = useState<MCP[]>([])
@@ -12,6 +20,7 @@ export default function MCPs() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<MCP | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [mcpType, setMCPType] = useState<string>('url')
   const [form] = Form.useForm()
 
   const load = () => {
@@ -27,13 +36,16 @@ export default function MCPs() {
 
   const openCreate = () => {
     setEditing(null)
+    setMCPType('url')
     form.resetFields()
     setModalOpen(true)
   }
 
   const openEdit = (m: MCP) => {
     setEditing(m)
-    form.setFieldsValue(m)
+    setMCPType(m.type || 'url')
+    const argsArr = m.args ? JSON.parse(m.args) : []
+    form.setFieldsValue({ ...m, args: Array.isArray(argsArr) ? argsArr.join(' ') : '' })
     setModalOpen(true)
   }
 
@@ -41,12 +53,26 @@ export default function MCPs() {
     try {
       const values = await form.validateFields()
       setSubmitting(true)
+      const payload: any = { ...values, type: mcpType }
+      if (mcpType === 'url') {
+        delete payload.command
+        delete payload.args
+      } else {
+        delete payload.endpoint
+        if (typeof payload.args === 'string') {
+          payload.args = payload.args.trim().split(/\s+/).filter(Boolean)
+        }
+      }
+      let res: any
       if (editing) {
-        await updateMCP(editing.id, values)
+        res = await updateMCP(editing.id, payload)
         message.success('已更新')
       } else {
-        await createMCP(values)
+        res = await createMCP(payload)
         message.success('已创建')
+      }
+      if (res?.data?.warning) {
+        message.warning(res.data.warning)
       }
       setModalOpen(false)
       load()
@@ -67,6 +93,10 @@ export default function MCPs() {
     }
   }
 
+  const fillTemplate = (t: typeof COMMAND_TEMPLATES[0]) => {
+    form.setFieldsValue({ command: t.command, args: t.args })
+  }
+
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
   if (error) return <Alert type="error" message="加载失败" description={error} showIcon action={<Button onClick={load}>重试</Button>} />
 
@@ -80,6 +110,7 @@ export default function MCPs() {
         <Row gutter={[16, 16]}>
           {mcps.map(m => {
             const tools = (() => { try { return JSON.parse(m.tools); } catch { return []; } })()
+            const isCommand = m.type === 'command' || m.command !== ''
             return (
               <Col xs={24} sm={12} lg={8} key={m.id}>
                 <Card
@@ -96,7 +127,12 @@ export default function MCPs() {
                     </Popconfirm>,
                   ]}
                 >
-                  <p><strong>Endpoint:</strong> {m.endpoint}</p>
+                  <p>
+                    <Tag icon={isCommand ? <CodeOutlined /> : <LinkOutlined />} color={isCommand ? 'blue' : 'cyan'}>
+                      {isCommand ? '本地命令' : 'URL'}
+                    </Tag>
+                  </p>
+                  <p><strong>{isCommand ? '命令:' : 'Endpoint:'}</strong> {isCommand ? `${m.command} ${m.args ? JSON.parse(m.args).join(' ') : ''}` : m.endpoint}</p>
                   <p><strong>工具数:</strong> {Array.isArray(tools) ? tools.length : 0}</p>
                 </Card>
               </Col>
@@ -110,6 +146,7 @@ export default function MCPs() {
         onOk={handleOk}
         onCancel={() => setModalOpen(false)}
         confirmLoading={submitting}
+        width={520}
       >
         <Form form={form} layout="vertical">
           {!editing && (
@@ -118,11 +155,38 @@ export default function MCPs() {
             </Form.Item>
           )}
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="例如: example-mcp" />
+            <Input placeholder="例如: my-mcp" />
           </Form.Item>
-          <Form.Item name="endpoint" label="Endpoint" rules={[{ required: true, message: '请输入 Endpoint' }]}>
-            <Input placeholder="http://localhost:9090" />
+          <Form.Item label="连接类型">
+            <Radio.Group value={mcpType} onChange={e => setMCPType(e.target.value)}>
+              <Radio.Button value="url"><LinkOutlined /> URL</Radio.Button>
+              <Radio.Button value="command"><CodeOutlined /> 本地命令</Radio.Button>
+            </Radio.Group>
           </Form.Item>
+          {mcpType === 'url' ? (
+            <Form.Item name="endpoint" label="Endpoint" rules={[{ required: true, message: '请输入 Endpoint' }]}>
+              <Input placeholder="http://localhost:9090" />
+            </Form.Item>
+          ) : (
+            <>
+              <Form.Item name="command" label="Command" rules={[{ required: true, message: '请输入命令' }]}>
+                <Input placeholder="例如: npx" />
+              </Form.Item>
+              <Form.Item name="args" label="Args">
+                <Input placeholder="例如: -y @modelcontextprotocol/server-filesystem /path" />
+              </Form.Item>
+              <Form.Item label="常用模板">
+                <Select placeholder="点击选择命令模板" onChange={(val: string) => {
+                  const t = COMMAND_TEMPLATES.find(t => t.label === val)
+                  if (t) fillTemplate(t)
+                }}>
+                  {COMMAND_TEMPLATES.map(t => (
+                    <Select.Option key={t.label} value={t.label}>{t.label}</Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </>
+          )}
           {editing && (
             <Form.Item name="enabled" label="启用" valuePropName="checked">
               <Switch />

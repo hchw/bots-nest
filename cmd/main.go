@@ -4,7 +4,9 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/api"
 	"github.com/hchw/bots-nest/internal/bot"
@@ -32,13 +34,27 @@ func main() {
 	var mcps []db.MCP
 	db.DB.Where("tools IS NULL OR tools = '' OR tools = '[]'").Find(&mcps)
 	for _, m := range mcps {
-		log.Printf("[MCP] 补发现工具: %s (%s)", m.Name, m.Endpoint)
-		tools, err := agent.NewMCPClient(m.Name, m.Endpoint).DiscoverTools()
-		if err != nil {
-			log.Printf("[MCP] %s 发现失败: %v", m.Name, err)
-			continue
+		if m.Type == "command" {
+			log.Printf("[MCP] 补发现工具: %s (%s)", m.Name, m.Command)
+			var args []string
+			if m.Args != "" {
+				json.Unmarshal([]byte(m.Args), &args)
+			}
+			tools, err := agent.NewLocalMCPClient(m.Name, m.Command, args).DiscoverTools()
+			if err != nil {
+				log.Printf("[MCP] %s 发现失败: %v", m.Name, err)
+				continue
+			}
+			db.DB.Model(&m).Update("tools", tools)
+		} else {
+			log.Printf("[MCP] 补发现工具: %s (%s)", m.Name, m.Endpoint)
+			tools, err := agent.NewMCPClient(m.Name, m.Endpoint).DiscoverTools()
+			if err != nil {
+				log.Printf("[MCP] %s 发现失败: %v", m.Name, err)
+				continue
+			}
+			db.DB.Model(&m).Update("tools", tools)
 		}
-		db.DB.Model(&m).Update("tools", tools)
 	}
 
 	log.Println("数据库初始化完成")

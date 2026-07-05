@@ -521,7 +521,10 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 	}
 	log.Printf("[loop] 最终回复: %s", finalReply)
 
-	// Send final finish signal (flushes remaining content if any)
+	// Send final reply as the content in the stream's final chunk
+	// (replaces any partial buffered content like "🤔 思考中...")
+	displayBuf.Reset()
+	displayBuf.WriteString(finalReply)
 	flushDisplay(true)
 
 	// Store assistant reply
@@ -721,7 +724,7 @@ func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
 	}
 	log.Printf("[go-judge] 加载 %d 个 Tool (skill=%s)", len(goJudgeTools), skill.Name)
 	for _, t := range goJudgeTools {
-		fnName := "gjtool__" + fmt.Sprintf("%d", t.ID)
+		fnName := "gjtool__" + fmt.Sprintf("%d", dbSkill.ID) + "_" + t.Name
 		log.Printf("[go-judge] 添加 Tool: name=%s fn=%s", t.Name, fnName)
 		desc := t.Name
 		if t.Prompt != "" {
@@ -790,14 +793,18 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 		return result.String()
 
 	case strings.HasPrefix(tc.Function.Name, "gjtool__"):
-		toolIDStr := strings.TrimPrefix(tc.Function.Name, "gjtool__")
-		var toolID uint
-		if _, err := fmt.Sscanf(toolIDStr, "%d", &toolID); err != nil {
-			return "无效的 Tool ID: " + toolIDStr
+		parts := strings.SplitN(strings.TrimPrefix(tc.Function.Name, "gjtool__"), "_", 2)
+		if len(parts) != 2 {
+			return "无效的 Tool 名称: " + tc.Function.Name
 		}
+		var skillID uint
+		if _, err := fmt.Sscanf(parts[0], "%d", &skillID); err != nil {
+			return "无效的 Skill ID: " + parts[0]
+		}
+		toolName := parts[1]
 
 		var gjt db.GoJudgeTool
-		if err := db.DB.First(&gjt, toolID).Error; err != nil {
+		if err := db.DB.Where("skill_id = ? AND name = ?", skillID, toolName).First(&gjt).Error; err != nil {
 			return "go-judge Tool 未找到"
 		}
 
@@ -859,8 +866,19 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 			return "MCP 服务器未找到: " + mcpID
 		}
 
-		client := agent.NewMCPClient(mcp.Name, mcp.Endpoint)
-		result, err := client.Call(toolName, args)
+		var result string
+		var err error
+		if mcp.Type == "command" {
+			var cmdArgs []string
+			if mcp.Args != "" {
+				json.Unmarshal([]byte(mcp.Args), &cmdArgs)
+			}
+			client := agent.NewLocalMCPClient(mcp.Name, mcp.Command, cmdArgs)
+			result, err = client.Call(toolName, args)
+		} else {
+			client := agent.NewMCPClient(mcp.Name, mcp.Endpoint)
+			result, err = client.Call(toolName, args)
+		}
 		if err != nil {
 			return "MCP 调用失败: " + err.Error()
 		}
