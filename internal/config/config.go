@@ -17,10 +17,11 @@ type LLMProviderConfig struct {
 }
 
 type MCPConfig struct {
-	Name     string `yaml:"name"`
-	Endpoint string `yaml:"endpoint"`
-	Command  string `yaml:"command"`
-	Args     string `yaml:"args"`
+	Name     string            `yaml:"name"`
+	Endpoint string            `yaml:"endpoint"`
+	Command  string            `yaml:"command"`
+	Args     string            `yaml:"args"`
+	Env      map[string]string `yaml:"env"`
 }
 
 type SkillConfig struct {

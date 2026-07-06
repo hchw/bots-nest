@@ -58,12 +58,13 @@ func SeedFromYAML(cfg *config.Config) {
 		command := m.Command
 		var args []string
 		var tools string
+		var envStr string
 		if m.Command != "" {
 			mcpType = "command"
 			if m.Args != "" {
 				args = strings.Split(m.Args, " ")
 			}
-			client := agent.NewLocalMCPClient(m.Name, m.Command, args)
+			client := agent.NewLocalMCPClient(m.Name, m.Command, args, m.Env)
 			t, err := client.DiscoverTools()
 			if err != nil {
 				log.Printf("[MCP] %s (%s) 自动发现工具失败: %v", m.Name, m.Command, err)
@@ -82,6 +83,10 @@ func SeedFromYAML(cfg *config.Config) {
 			data, _ := json.Marshal(args)
 			argsStr = string(data)
 		}
+		if len(m.Env) > 0 {
+			data, _ := json.Marshal(m.Env)
+			envStr = string(data)
+		}
 		DB.Create(&MCP{
 			ID:       m.Name,
 			Name:     m.Name,
@@ -89,6 +94,7 @@ func SeedFromYAML(cfg *config.Config) {
 			Endpoint: endpoint,
 			Command:  command,
 			Args:     argsStr,
+			Env:      envStr,
 			Tools:    tools,
 			Enabled:  true,
 		})

@@ -873,7 +873,11 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 			if mcp.Args != "" {
 				json.Unmarshal([]byte(mcp.Args), &cmdArgs)
 			}
-			client := agent.NewLocalMCPClient(mcp.Name, mcp.Command, cmdArgs)
+			var envMap map[string]string
+			if mcp.Env != "" {
+				json.Unmarshal([]byte(mcp.Env), &envMap)
+			}
+			client := agent.NewLocalMCPClient(mcp.Name, mcp.Command, cmdArgs, envMap)
 			result, err = client.Call(toolName, args)
 		} else {
 			client := agent.NewMCPClient(mcp.Name, mcp.Endpoint)

@@ -460,9 +460,9 @@ func (h *Handler) deleteLLMProvider(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
-func autoDiscoverTools(mcpType, endpoint string, command string, args []string) (string, error) {
+func autoDiscoverTools(mcpType, endpoint string, command string, args []string, env ...map[string]string) (string, error) {
 	if mcpType == "command" {
-		client := agent.NewLocalMCPClient("discovery", command, args)
+		client := agent.NewLocalMCPClient("discovery", command, args, env...)
 		result, err := client.DiscoverTools()
 		if err != nil {
 			log.Printf("[MCP] DiscoverTools 失败 command=%s: %v", command, err)
@@ -483,12 +483,13 @@ func autoDiscoverTools(mcpType, endpoint string, command string, args []string) 
 
 func (h *Handler) createMCP(c *gin.Context) {
 	var req struct {
-		ID       string   `json:"id" binding:"required"`
-		Name     string   `json:"name" binding:"required"`
-		Type     string   `json:"type"`
-		Endpoint string   `json:"endpoint"`
-		Command  string   `json:"command"`
-		Args     []string `json:"args"`
+		ID       string            `json:"id" binding:"required"`
+		Name     string            `json:"name" binding:"required"`
+		Type     string            `json:"type"`
+		Endpoint string            `json:"endpoint"`
+		Command  string            `json:"command"`
+		Args     []string          `json:"args"`
+		Env      map[string]string `json:"env"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
@@ -514,7 +515,12 @@ func (h *Handler) createMCP(c *gin.Context) {
 			data, _ := json.Marshal(req.Args)
 			argsStr = string(data)
 		}
-		tools, err := autoDiscoverTools("command", "", req.Command, req.Args)
+		envStr := ""
+		if len(req.Env) > 0 {
+			data, _ := json.Marshal(req.Env)
+			envStr = string(data)
+		}
+		tools, err := autoDiscoverTools("command", "", req.Command, req.Args, req.Env)
 		if err != nil {
 			discErr = err.Error()
 		}
@@ -524,6 +530,7 @@ func (h *Handler) createMCP(c *gin.Context) {
 			Type:    "command",
 			Command: req.Command,
 			Args:    argsStr,
+			Env:     envStr,
 			Tools:   tools,
 			Enabled: true,
 		}
@@ -568,12 +575,13 @@ func (h *Handler) updateMCP(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string   `json:"name"`
-		Type     string   `json:"type"`
-		Endpoint string   `json:"endpoint"`
-		Command  string   `json:"command"`
-		Args     []string `json:"args"`
-		Enabled  *bool    `json:"enabled"`
+		Name     string            `json:"name"`
+		Type     string            `json:"type"`
+		Endpoint string            `json:"endpoint"`
+		Command  string            `json:"command"`
+		Args     []string          `json:"args"`
+		Env      map[string]string `json:"env"`
+		Enabled  *bool             `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
@@ -593,6 +601,7 @@ func (h *Handler) updateMCP(c *gin.Context) {
 		updates["endpoint"] = endpoint
 		updates["command"] = ""
 		updates["args"] = ""
+		updates["env"] = ""
 		tools, err := autoDiscoverTools("url", endpoint, "", nil)
 		if err != nil {
 			discErr = err.Error()
@@ -608,11 +617,19 @@ func (h *Handler) updateMCP(c *gin.Context) {
 			argsStr = string(data)
 		}
 		updates["args"] = argsStr
-		tools, err := autoDiscoverTools("command", "", req.Command, req.Args)
+		tools, err := autoDiscoverTools("command", "", req.Command, req.Args, req.Env)
 		if err != nil {
 			discErr = err.Error()
 		}
 		updates["tools"] = tools
+	}
+	if req.Env != nil {
+		envStr := ""
+		if len(req.Env) > 0 {
+			data, _ := json.Marshal(req.Env)
+			envStr = string(data)
+		}
+		updates["env"] = envStr
 	}
 	if req.Enabled != nil {
 		updates["enabled"] = *req.Enabled

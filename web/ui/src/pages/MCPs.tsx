@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Card, Spin, Empty, Alert, Typography, Tag, Row, Col, Button, Modal, Form, Input, Switch, message, Popconfirm, Radio, Select } from 'antd'
-import { CheckCircleOutlined, StopOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LinkOutlined, CodeOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, StopOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LinkOutlined, CodeOutlined, EnvironmentOutlined } from '@ant-design/icons'
 import { getMCPs, createMCP, updateMCP, deleteMCP, MCP } from '../api'
 
 const { Title, Text } = Typography
@@ -38,6 +38,7 @@ export default function MCPs() {
     setEditing(null)
     setMCPType('url')
     form.resetFields()
+    form.setFieldsValue({ env: [{ key: '', value: '' }] })
     setModalOpen(true)
   }
 
@@ -45,7 +46,9 @@ export default function MCPs() {
     setEditing(m)
     setMCPType(m.type || 'url')
     const argsArr = m.args ? JSON.parse(m.args) : []
-    form.setFieldsValue({ ...m, args: Array.isArray(argsArr) ? argsArr.join(' ') : '' })
+    const envObj = m.env ? JSON.parse(m.env) : {}
+    const envList = Object.entries(envObj).map(([key, value]) => ({ key, value: value as string }))
+    form.setFieldsValue({ ...m, args: Array.isArray(argsArr) ? argsArr.join(' ') : '', env: envList.length > 0 ? envList : [{ key: '', value: '' }] })
     setModalOpen(true)
   }
 
@@ -57,11 +60,19 @@ export default function MCPs() {
       if (mcpType === 'url') {
         delete payload.command
         delete payload.args
+        delete payload.env
       } else {
         delete payload.endpoint
         if (typeof payload.args === 'string') {
           payload.args = payload.args.trim().split(/\s+/).filter(Boolean)
         }
+        const envObj: Record<string, string> = {}
+        if (Array.isArray(payload.env)) {
+          payload.env.forEach((item: any) => {
+            if (item.key) envObj[item.key] = item.value || ''
+          })
+        }
+        payload.env = envObj
       }
       let res: any
       if (editing) {
@@ -185,6 +196,31 @@ export default function MCPs() {
                   ))}
                 </Select>
               </Form.Item>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}><EnvironmentOutlined style={{ marginRight: 4 }} />环境变量</div>
+              <Form.List name="env">
+                {(fields, { add, remove }) => (
+                  <>
+                    {fields.map(({ key, name, ...rest }) => (
+                      <Row key={key} gutter={8} style={{ marginBottom: 8 }} align="middle">
+                        <Col flex="auto">
+                          <Form.Item {...rest} name={[name, 'key']} noStyle>
+                            <Input placeholder="KEY" style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col flex="auto">
+                          <Form.Item {...rest} name={[name, 'value']} noStyle>
+                            <Input placeholder="VALUE" style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col>
+                          <Button type="text" danger onClick={() => remove(name)}>删除</Button>
+                        </Col>
+                      </Row>
+                    ))}
+                    <Button type="dashed" onClick={() => add()} block>+ 添加环境变量</Button>
+                  </>
+                )}
+              </Form.List>
             </>
           )}
           {editing && (

@@ -25,6 +25,7 @@ type MCP struct {
 	Endpoint  string    `gorm:"default:''" json:"endpoint"`
 	Command   string    `gorm:"default:''" json:"command"`
 	Args      string    `gorm:"default:''" json:"args"`
+	Env       string    `gorm:"default:''" json:"env"`
 	Tools     string    `gorm:"type:text" json:"tools"`
 	Enabled   bool      `gorm:"default:1" json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`

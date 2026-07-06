@@ -21,6 +21,7 @@ export interface MCP {
   endpoint: string
   command: string
   args: string
+  env: string
   tools: string
   enabled: boolean
   created_at: string
