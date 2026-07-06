@@ -4,14 +4,18 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -184,7 +188,7 @@ func (m *MCPClient) DiscoverTools() (string, error) {
 		Tools []json.RawMessage `json:"tools"`
 	}
 	if err := json.Unmarshal(raw, &listResult); err != nil {
-		return "[]", nil
+		return "[]", fmt.Errorf("tools list 解析失败: %w", err)
 	}
 
 	mapped := make([]map[string]interface{}, 0, len(listResult.Tools))
@@ -234,18 +238,32 @@ func (m *MCPClient) Call(toolName string, args map[string]interface{}) (string, 
 }
 
 // LocalMCPClient communicates with a local MCP Server via its subprocess stdio.
+// It keeps a long-lived subprocess so the MCP handshake (initialize → initialized → tools/list)
+// works correctly across multiple RPC calls.
 type LocalMCPClient struct {
 	name    string
 	command string
 	args    []string
+	env     map[string]string
 	reqID   int
+
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	stderrCh chan string
 }
 
-func NewLocalMCPClient(name, command string, args []string) *LocalMCPClient {
+func NewLocalMCPClient(name, command string, args []string, env ...map[string]string) *LocalMCPClient {
+	var envMap map[string]string
+	if len(env) > 0 {
+		envMap = env[0]
+	}
 	return &LocalMCPClient{
 		name:    name,
 		command: command,
 		args:    args,
+		env:     envMap,
 	}
 }
 
@@ -258,55 +276,114 @@ func (m *LocalMCPClient) Name() string {
 	return m.name
 }
 
-// execWithTimeout starts the subprocess, sends the request via stdin, and reads the response from stdout.
-func (m *LocalMCPClient) execWithTimeout(ctx context.Context, req *jrpcRequest) (json.RawMessage, error) {
+func (m *LocalMCPClient) startProcess() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cmd != nil {
+		return nil
+	}
+
+	cmd := exec.Command(m.command, m.args...)
+	if len(m.env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range m.env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("创建 stdin pipe 失败: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("创建 stdout pipe 失败: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("创建 stderr pipe 失败: %w", err)
+	}
+
+	stderrCh := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(stderr)
+		stderrCh <- string(data)
+	}()
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动子进程失败: %w", err)
+	}
+
+	m.cmd = cmd
+	m.stdin = stdin
+	m.stdout = bufio.NewReader(stdout)
+	m.stderrCh = stderrCh
+	return nil
+}
+
+func (m *LocalMCPClient) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cmd == nil {
+		return nil
+	}
+	if m.stdin != nil {
+		m.stdin.Close()
+	}
+	waitErr := m.cmd.Wait()
+	var stderr string
+	if m.stderrCh != nil {
+		select {
+		case stderr = <-m.stderrCh:
+		default:
+		}
+	}
+	err := waitErr
+	if waitErr != nil || stderr != "" {
+		err = fmt.Errorf("子进程退出: %v (stderr: %s)", waitErr, strings.TrimSpace(stderr))
+	}
+	m.cmd = nil
+	m.stdin = nil
+	m.stdout = nil
+	m.stderrCh = nil
+	return err
+}
+
+func (m *LocalMCPClient) send(ctx context.Context, req *jrpcRequest) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.cmd == nil {
+		return nil, fmt.Errorf("子进程未启动")
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, m.command, m.args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("创建 stdin pipe 失败: %w", err)
+	// MCP stdio transport uses Content-Length headers for framing
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+	if _, err := m.stdin.Write([]byte(header)); err != nil {
+		return nil, fmt.Errorf("写入 header 失败: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("创建 stdout pipe 失败: %w", err)
+	if _, err := m.stdin.Write(body); err != nil {
+		return nil, fmt.Errorf("写入 body 失败: %w", err)
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("创建 stderr pipe 失败: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动子进程失败: %w", err)
-	}
-
-	stdin.Write(body)
-	stdin.Close()
-
-	out, _ := io.ReadAll(stdout)
-	errOut, _ := io.ReadAll(stderr)
-
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("MCP 请求超时（%s）", req.Method)
-		}
-		errMsg := ""
-		if len(errOut) > 0 {
-			errMsg = ": " + string(errOut)
-		}
-		return nil, fmt.Errorf("子进程异常退出: %v%s", waitErr, errMsg)
+	if _, err := m.stdin.Write([]byte("\n")); err != nil {
+		return nil, fmt.Errorf("写入换行失败: %w", err)
 	}
 
 	if req.ID == nil {
 		return nil, nil
 	}
 
+	raw, err := m.readResponse(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	var jr jrpcResponse
-	if err := json.Unmarshal(out, &jr); err != nil {
+	if err := json.Unmarshal(raw, &jr); err != nil {
 		return nil, fmt.Errorf("MCP 响应 JSON 解析失败: %w", err)
 	}
 	if jr.Error != nil {
@@ -316,8 +393,76 @@ func (m *LocalMCPClient) execWithTimeout(ctx context.Context, req *jrpcRequest) 
 	return jr.Result, nil
 }
 
+func (m *LocalMCPClient) readResponse(ctx context.Context) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		first, err := m.stdout.ReadString('\n')
+		if err != nil {
+			msg := fmt.Sprintf("读取响应失败: %v", err)
+			if m.stderrCh != nil {
+				select {
+				case stderr := <-m.stderrCh:
+					if stderr != "" {
+						msg += " (stderr: " + strings.TrimSpace(stderr) + ")"
+					}
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+			ch <- result{nil, fmt.Errorf(msg)}
+			return
+		}
+
+		trimmed := strings.TrimRight(first, "\r\n")
+
+		// Check if this is Content-Length framed or newline-delimited JSON
+		if strings.HasPrefix(strings.ToLower(trimmed), "content-length:") {
+			contentLen, err := strconv.Atoi(strings.TrimSpace(trimmed[len("content-length:"):]))
+			if err != nil || contentLen <= 0 {
+				ch <- result{nil, fmt.Errorf("无效的 Content-Length: %s", trimmed)}
+				return
+			}
+			// Read remaining headers until empty line
+			for {
+				line, err := m.stdout.ReadString('\n')
+				if err != nil {
+					ch <- result{nil, fmt.Errorf("读取 header 失败: %w", err)}
+					return
+				}
+				if strings.TrimRight(line, "\r\n") == "" {
+					break
+				}
+			}
+			data := make([]byte, contentLen)
+			if _, err := io.ReadFull(m.stdout, data); err != nil {
+				ch <- result{nil, fmt.Errorf("读取 body 失败: %w", err)}
+				return
+			}
+			ch <- result{data, nil}
+		} else {
+			// Newline-delimited JSON — the first line IS the response
+			ch <- result{[]byte(strings.TrimRight(first, "\r\n")), nil}
+		}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.data, r.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("MCP 请求超时")
+	}
+}
+
 func (m *LocalMCPClient) initSession(ctx context.Context) error {
-	_, err := m.execWithTimeout(ctx, &jrpcRequest{
+	if err := m.startProcess(); err != nil {
+		return err
+	}
+
+	_, err := m.send(ctx, &jrpcRequest{
 		JSONRPC: "2.0",
 		ID:      m.nextID(),
 		Method:  "initialize",
@@ -334,7 +479,7 @@ func (m *LocalMCPClient) initSession(ctx context.Context) error {
 		return err
 	}
 
-	_, err = m.execWithTimeout(ctx, &jrpcRequest{
+	_, err = m.send(ctx, &jrpcRequest{
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
 	})
@@ -342,6 +487,8 @@ func (m *LocalMCPClient) initSession(ctx context.Context) error {
 }
 
 func (m *LocalMCPClient) DiscoverTools() (string, error) {
+	defer m.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -349,7 +496,7 @@ func (m *LocalMCPClient) DiscoverTools() (string, error) {
 		return "[]", err
 	}
 
-	raw, err := m.execWithTimeout(ctx, &jrpcRequest{
+	raw, err := m.send(ctx, &jrpcRequest{
 		JSONRPC: "2.0",
 		ID:      m.nextID(),
 		Method:  "tools/list",
@@ -362,7 +509,7 @@ func (m *LocalMCPClient) DiscoverTools() (string, error) {
 		Tools []json.RawMessage `json:"tools"`
 	}
 	if err := json.Unmarshal(raw, &listResult); err != nil {
-		return "[]", nil
+		return "[]", fmt.Errorf("tools list 解析失败: %w", err)
 	}
 
 	mapped := make([]map[string]interface{}, 0, len(listResult.Tools))
@@ -390,6 +537,8 @@ func (m *LocalMCPClient) DiscoverTools() (string, error) {
 }
 
 func (m *LocalMCPClient) Call(toolName string, args map[string]interface{}) (string, error) {
+	defer m.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -397,7 +546,7 @@ func (m *LocalMCPClient) Call(toolName string, args map[string]interface{}) (str
 		return "", err
 	}
 
-	raw, err := m.execWithTimeout(ctx, &jrpcRequest{
+	raw, err := m.send(ctx, &jrpcRequest{
 		JSONRPC: "2.0",
 		ID:      m.nextID(),
 		Method:  "tools/call",
