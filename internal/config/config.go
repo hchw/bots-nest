@@ -51,13 +51,30 @@ type DatabaseConfig struct {
 	MaxOpenConns int   `yaml:"max_open_conns"`
 }
 
+type WeaviateConfig struct {
+	Endpoint  string `yaml:"endpoint"`
+	Scheme    string `yaml:"scheme"`
+	APIKey    string `yaml:"api_key"`
+}
+
+type KnowledgeBaseConfig struct {
+	MaxFileSize       int64    `yaml:"max_file_size"`
+	AllowedExtensions []string `yaml:"allowed_extensions"`
+	ChunkSize         int      `yaml:"chunk_size"`
+	ChunkOverlap      int      `yaml:"chunk_overlap"`
+	SearchDefaultTopK int      `yaml:"search_default_top_k"`
+	SearchHybridAlpha float64  `yaml:"search_hybrid_alpha"`
+}
+
 type Config struct {
-	Database      DatabaseConfig      `yaml:"database"`
-	LLMProviders  []LLMProviderConfig `yaml:"llm_providers"`
-	MCPs          []MCPConfig         `yaml:"mcps"`
-	Bots          []BotConfig         `yaml:"bots"`
-	SkillsDir     string              `yaml:"skills_dir"`
-	GoJudgeEndpoint string            `yaml:"go_judge_endpoint"`
+	Database         DatabaseConfig      `yaml:"database"`
+	LLMProviders     []LLMProviderConfig `yaml:"llm_providers"`
+	MCPs             []MCPConfig         `yaml:"mcps"`
+	Bots             []BotConfig         `yaml:"bots"`
+	SkillsDir        string              `yaml:"skills_dir"`
+	GoJudgeEndpoint  string              `yaml:"go_judge_endpoint"`
+	Weaviate         WeaviateConfig      `yaml:"weaviate"`
+	KnowledgeBase    KnowledgeBaseConfig `yaml:"knowledge_base"`
 }
 
 func Load(path string) (*Config, error) {

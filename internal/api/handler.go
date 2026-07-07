@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,8 +13,10 @@ import (
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
+	"github.com/hchw/bots-nest/internal/knowledge"
 	"github.com/hchw/bots-nest/internal/llm"
 	"github.com/hchw/bots-nest/internal/skilltool"
+	"github.com/hchw/bots-nest/internal/ws"
 	"strconv"
 	"strings"
 
@@ -22,12 +25,21 @@ import (
 )
 
 type Handler struct {
-	botManager *bot.BotManager
-	cfg        *config.Config
+	botManager     *bot.BotManager
+	cfg            *config.Config
+	weaviateClient *knowledge.WeaviateClient
+	wsHub          *ws.Hub
+	importManager  *knowledge.ImportTaskManager
 }
 
-func NewHandler(bm *bot.BotManager, cfg *config.Config) *Handler {
-	return &Handler{botManager: bm, cfg: cfg}
+func NewHandler(bm *bot.BotManager, cfg *config.Config, wc *knowledge.WeaviateClient, hub *ws.Hub, im *knowledge.ImportTaskManager) *Handler {
+	return &Handler{
+		botManager:     bm,
+		cfg:            cfg,
+		weaviateClient: wc,
+		wsHub:          hub,
+		importManager:  im,
+	}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -64,6 +76,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		toolHandler.RegisterRoutes(toolGroup)
 
 		api.POST("/bots/:id/polish-code", h.polishCode)
+
+		api.GET("/knowledge-bases", h.listKnowledgeBases)
+		api.POST("/knowledge-bases", h.createKnowledgeBase)
+		api.GET("/knowledge-bases/:id", h.getKnowledgeBase)
+		api.PUT("/knowledge-bases/:id", h.updateKnowledgeBase)
+		api.DELETE("/knowledge-bases/:id", h.deleteKnowledgeBase)
+		api.POST("/knowledge-bases/:id/upload", h.uploadFile)
+		api.GET("/knowledge-bases/:id/tasks", h.listImportTasks)
+		api.GET("/import-tasks/:id", h.getImportTask)
+		api.GET("/bots/:id/bindings", h.getBotBindings)
+		api.PUT("/bots/:id/bindings", h.updateBotBindings)
 
 		api.GET("/sessions/:key", h.getSession)
 		api.POST("/sessions/:key/expire", h.expireSession)
@@ -927,4 +950,198 @@ func (h *Handler) deleteSkill(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+}
+
+func (h *Handler) listKnowledgeBases(c *gin.Context) {
+	var kbs []db.KnowledgeBase
+	db.DB.Order("created_at DESC").Find(&kbs)
+	c.JSON(http.StatusOK, kbs)
+}
+
+func (h *Handler) createKnowledgeBase(c *gin.Context) {
+	var req struct {
+		ID                  string `json:"id" binding:"required"`
+		Name                string `json:"name" binding:"required"`
+		Description         string `json:"description"`
+		EmbeddingProviderID string `json:"embedding_provider_id" binding:"required"`
+		EmbeddingModel      string `json:"embedding_model" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	kb := db.KnowledgeBase{
+		ID:                  req.ID,
+		Name:                req.Name,
+		Description:         req.Description,
+		EmbeddingProviderID: req.EmbeddingProviderID,
+		EmbeddingModel:      req.EmbeddingModel,
+	}
+	if err := db.DB.Create(&kb).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "创建失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, kb)
+}
+
+func (h *Handler) getKnowledgeBase(c *gin.Context) {
+	id := c.Param("id")
+	var kb db.KnowledgeBase
+	if err := db.DB.Where("id = ?", id).First(&kb).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "知识库未找到"})
+		return
+	}
+	c.JSON(http.StatusOK, kb)
+}
+
+func (h *Handler) updateKnowledgeBase(c *gin.Context) {
+	id := c.Param("id")
+	var kb db.KnowledgeBase
+	if err := db.DB.Where("id = ?", id).First(&kb).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "知识库未找到"})
+		return
+	}
+
+	var req struct {
+		Name                *string `json:"name"`
+		Description         *string `json:"description"`
+		EmbeddingProviderID *string `json:"embedding_provider_id"`
+		EmbeddingModel      *string `json:"embedding_model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
+	if req.EmbeddingProviderID != nil {
+		updates["embedding_provider_id"] = *req.EmbeddingProviderID
+	}
+	if req.EmbeddingModel != nil {
+		updates["embedding_model"] = *req.EmbeddingModel
+	}
+	db.DB.Model(&kb).Updates(updates)
+	db.DB.Where("id = ?", id).First(&kb)
+	c.JSON(http.StatusOK, kb)
+}
+
+func (h *Handler) deleteKnowledgeBase(c *gin.Context) {
+	id := c.Param("id")
+	var kb db.KnowledgeBase
+	if err := db.DB.Where("id = ?", id).First(&kb).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "知识库未找到"})
+		return
+	}
+
+	var bindingCount int64
+	db.DB.Model(&db.BotKnowledgeBinding{}).Where("knowledge_base_id = ?", id).Count(&bindingCount)
+	if bindingCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("有 %d 个机器人绑定此知识库，请先解绑", bindingCount)})
+		return
+	}
+
+	if h.weaviateClient != nil {
+		if err := h.weaviateClient.DeleteByKBID(context.Background(), id); err != nil {
+			log.Printf("[Knowledge] 删除 Weaviate 数据失败: %v", err)
+		}
+	}
+
+	db.DB.Where("knowledge_base_id = ?", id).Delete(&db.ImportTask{})
+	db.DB.Where("knowledge_base_id = ?", id).Delete(&db.BotKnowledgeBinding{})
+	db.DB.Delete(&kb)
+	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+}
+
+func (h *Handler) uploadFile(c *gin.Context) {
+	id := c.Param("id")
+	var kb db.KnowledgeBase
+	if err := db.DB.Where("id = ?", id).First(&kb).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "知识库未找到"})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未找到上传文件"})
+		return
+	}
+	defer file.Close()
+
+	if h.importManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "导入管理器未初始化"})
+		return
+	}
+
+	task, err := h.importManager.ReceiveFile(id, header.Filename, file, header.Size)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"task_id": task.ID,
+		"message": "文件上传成功，后台导入中",
+	})
+}
+
+func (h *Handler) listImportTasks(c *gin.Context) {
+	kbID := c.Param("id")
+	var tasks []db.ImportTask
+	db.DB.Where("knowledge_base_id = ?", kbID).Order("created_at DESC").Find(&tasks)
+	c.JSON(http.StatusOK, tasks)
+}
+
+func (h *Handler) getImportTask(c *gin.Context) {
+	taskID := c.Param("id")
+	var task db.ImportTask
+	if err := db.DB.Where("id = ?", taskID).First(&task).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "导入任务未找到"})
+		return
+	}
+	c.JSON(http.StatusOK, task)
+}
+
+func (h *Handler) getBotBindings(c *gin.Context) {
+	botID := c.Param("id")
+	var bindings []db.BotKnowledgeBinding
+	db.DB.Where("bot_id = ?", botID).Find(&bindings)
+	c.JSON(http.StatusOK, bindings)
+}
+
+func (h *Handler) updateBotBindings(c *gin.Context) {
+	botID := c.Param("id")
+
+	var req struct {
+		KBIDs []string `json:"kb_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	tx := db.DB.Begin()
+	tx.Where("bot_id = ?", botID).Delete(&db.BotKnowledgeBinding{})
+	for _, kbID := range req.KBIDs {
+		tx.Create(&db.BotKnowledgeBinding{
+			BotID:           botID,
+			KnowledgeBaseID: kbID,
+		})
+	}
+	tx.Commit()
+
+	if instance := h.botManager.GetBot(botID); instance != nil {
+		h.botManager.StopBot(botID)
+		h.botManager.StartBot(botID)
+	}
+
+	var bindings []db.BotKnowledgeBinding
+	db.DB.Where("bot_id = ?", botID).Find(&bindings)
+	c.JSON(http.StatusOK, bindings)
 }

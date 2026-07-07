@@ -4,6 +4,7 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
+	"github.com/hchw/bots-nest/internal/knowledge"
 	"github.com/hchw/bots-nest/internal/llm"
 	"github.com/hchw/bots-nest/internal/skilltool"
 )
@@ -132,15 +134,17 @@ func (m *SessionManager) TotalTokens(sessionKey string) (int, error) {
 }
 
 type BotManager struct {
-	mu   sync.Mutex
-	bots map[string]*BotInstance
-	cfg  *config.Config
+	mu             sync.Mutex
+	bots           map[string]*BotInstance
+	cfg            *config.Config
+	weaviateClient *knowledge.WeaviateClient
 }
 
-func NewBotManager(cfg *config.Config) *BotManager {
+func NewBotManager(cfg *config.Config, wc *knowledge.WeaviateClient) *BotManager {
 	return &BotManager{
-		bots: make(map[string]*BotInstance),
-		cfg:  cfg,
+		bots:           make(map[string]*BotInstance),
+		cfg:            cfg,
+		weaviateClient: wc,
 	}
 }
 
@@ -247,9 +251,10 @@ func (m *BotManager) StartBot(botID string) error {
 			Enabled:          b.Enabled,
 			GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
 		},
-		WeCom:      wecom,
-		SkillEng:   skillEng,
-		SessionMgr: NewSessionManager(b.ID),
+		WeCom:          wecom,
+		SkillEng:       skillEng,
+		SessionMgr:     NewSessionManager(b.ID),
+		WeaviateClient: m.weaviateClient,
 	}
 
 	wecom.SetMessageHandler(func(msg *WeComMessage) {
@@ -620,6 +625,55 @@ func (b *BotInstance) buildTools() []llm.ToolDefinition {
 		},
 	})
 
+	// Add search_knowledge tool if Weaviate client is available
+	if b.WeaviateClient != nil {
+		var kbDesc string
+		var bindings []db.BotKnowledgeBinding
+		db.DB.Where("bot_id = ?", b.ID).Find(&bindings)
+		if len(bindings) > 0 {
+			var kbNames []string
+			for _, binding := range bindings {
+				var kb db.KnowledgeBase
+				if err := db.DB.Where("id = ?", binding.KnowledgeBaseID).First(&kb).Error; err == nil {
+					kbNames = append(kbNames, kb.Name+" ("+kb.ID+")")
+				}
+			}
+			if len(kbNames) > 0 {
+				kbDesc = "当前可检索知识库：" + strings.Join(kbNames, "、")
+			}
+		}
+		if kbDesc == "" {
+			kbDesc = "从知识库中检索相关内容。"
+		}
+
+		tools = append(tools, llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "search_knowledge",
+				Description: kbDesc,
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "搜索查询",
+						},
+						"kb_ids": map[string]interface{}{
+							"type":        "array",
+							"items":       map[string]interface{}{"type": "string"},
+							"description": "限定知识库 ID 列表（可选，默认检索所有绑定的知识库）",
+						},
+						"top_k": map[string]interface{}{
+							"type":        "number",
+							"description": "返回结果数量（默认 5）",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		})
+	}
+
 	return tools
 }
 
@@ -765,6 +819,75 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 	}
 
 	switch {
+	case tc.Function.Name == "search_knowledge":
+		query, _ := args["query"].(string)
+		if query == "" {
+			return "缺少 query 参数"
+		}
+
+		kbIDsRaw, _ := args["kb_ids"].([]interface{})
+		var kbIDs []string
+		for _, id := range kbIDsRaw {
+			if s, ok := id.(string); ok {
+				kbIDs = append(kbIDs, s)
+			}
+		}
+
+		topK := 5
+		if topKFloat, ok := args["top_k"].(float64); ok {
+			topK = int(topKFloat)
+			if topK > 20 {
+				topK = 20
+			}
+		}
+
+		// If no kb_ids specified, use bot's bound knowledge bases
+		if len(kbIDs) == 0 {
+			var bindings []db.BotKnowledgeBinding
+			db.DB.Where("bot_id = ?", b.ID).Find(&bindings)
+			for _, binding := range bindings {
+				kbIDs = append(kbIDs, binding.KnowledgeBaseID)
+			}
+		}
+
+		if len(kbIDs) == 0 {
+			return "未绑定任何知识库，无法检索"
+		}
+
+		// Use first KB's embedding config
+		var firstKB db.KnowledgeBase
+		if err := db.DB.Where("id = ?", kbIDs[0]).First(&firstKB).Error; err != nil {
+			return fmt.Sprintf("知识库 %s 未找到: %v", kbIDs[0], err)
+		}
+
+		embedder := knowledge.NewEmbedder()
+		vectors, err := embedder.Embed(firstKB.EmbeddingProviderID, firstKB.EmbeddingModel, []string{query})
+		if err != nil {
+			return "向量化查询失败: " + err.Error()
+		}
+		queryVector := vectors[0]
+
+		results, err := b.WeaviateClient.HybridSearch(context.Background(), query, queryVector, kbIDs, topK, 0.5)
+		if err != nil {
+			return "检索失败: " + err.Error()
+		}
+
+		if len(results) == 0 {
+			return "未检索到相关内容"
+		}
+
+		var buf strings.Builder
+		buf.WriteString(fmt.Sprintf("找到 %d 条相关结果：\n\n", len(results)))
+		for i, r := range results {
+			buf.WriteString(fmt.Sprintf("--- 结果 %d (相关度: %.2f) ---\n", i+1, r.Score))
+			if r.DocTitle != "" {
+				buf.WriteString(fmt.Sprintf("标题: %s\n", r.DocTitle))
+			}
+			buf.WriteString(fmt.Sprintf("来源: %s\n", r.SourceFile))
+			buf.WriteString(fmt.Sprintf("内容: %s\n\n", r.Content))
+		}
+		return buf.String()
+
 	case tc.Function.Name == "shell_exec":
 		cmd, _ := args["command"].(string)
 		if cmd == "" {

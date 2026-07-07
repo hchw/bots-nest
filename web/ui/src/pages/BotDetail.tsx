@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Tabs, Spin, Alert, Typography, Table, Button, Modal, Form, Input, Switch, message, Descriptions, Tag, Popconfirm, Space } from 'antd'
-import { getBotSessions, getBotSkills, getSession, createSkill, updateSkill, deleteSkill, expireSession, deleteSession, Session, Message, Skill } from '../api'
+import { getBotSessions, getBotSkills, getSession, createSkill, updateSkill, deleteSkill, expireSession, deleteSession, getKnowledgeBases, getBotBindings, Session, Message, Skill, KnowledgeBase } from '../api'
 import ToolPanel from '../components/ToolPanel'
 import { PlusOutlined, EditOutlined, DeleteOutlined, ToolOutlined } from '@ant-design/icons'
 
@@ -18,6 +18,8 @@ export default function BotDetail() {
   const [toolSkill, setToolSkill] = useState<Skill | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [skillForm] = Form.useForm()
+  const [boundKBs, setBoundKBs] = useState<KnowledgeBase[]>([])
+  const [bindingsLoading, setBindingsLoading] = useState(false)
 
   const load = () => {
     if (!id) return
@@ -26,10 +28,15 @@ export default function BotDetail() {
     Promise.all([
       getBotSessions(id),
       getBotSkills(id),
+      getBotBindings(id),
+      getKnowledgeBases(),
     ])
-      .then(([sessionsRes, skillsRes]) => {
+      .then(([sessionsRes, skillsRes, bindingRes, kbRes]) => {
         setSessions(sessionsRes.data.sessions)
         setSkills(skillsRes.data)
+        const allKBs = kbRes.data
+        const bindings = bindingRes.data.map((b: any) => b.kb_id)
+        setBoundKBs(allKBs.filter((kb: KnowledgeBase) => bindings.includes(kb.id)))
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
@@ -210,6 +217,29 @@ export default function BotDetail() {
                 <Button type="primary" icon={<PlusOutlined />} onClick={openCreateSkill}>新增技能</Button>
               </div>
               <Table dataSource={skills} columns={skillColumns} rowKey="id" pagination={false} />
+            </div>
+          ),
+        },
+        {
+          key: 'knowledge',
+          label: `知识库 (${boundKBs.length})`,
+          children: (
+            <div>
+              {boundKBs.length === 0 ? (
+                <Typography.Text type="secondary">暂未绑定知识库</Typography.Text>
+              ) : (
+                <Table
+                  dataSource={boundKBs}
+                  columns={[
+                    { title: 'ID', dataIndex: 'id', key: 'id' },
+                    { title: '名称', dataIndex: 'name', key: 'name' },
+                    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+                    { title: '文件数', dataIndex: 'file_count', key: 'file_count' },
+                  ]}
+                  rowKey="id"
+                  pagination={false}
+                />
+              )}
             </div>
           ),
         },

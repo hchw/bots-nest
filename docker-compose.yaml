@@ -18,3 +18,16 @@ services:
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
+
+  weaviate:
+    image: semitechnologies/weaviate:latest
+    ports:
+      - "8079:8080"
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+
+volumes:
+  weaviate_data:

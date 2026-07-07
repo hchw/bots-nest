@@ -5,6 +5,7 @@ import {
   RobotOutlined,
   ApiOutlined,
   ToolOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons'
 import LLMProviders from './pages/LLMProviders'
 import MCPs from './pages/MCPs'
@@ -12,6 +13,8 @@ import Bots from './pages/Bots'
 import BotNew from './pages/BotNew'
 import BotEdit from './pages/BotEdit'
 import BotDetail from './pages/BotDetail'
+import KnowledgeBases from './pages/KnowledgeBases'
+import KnowledgeBaseDetail from './pages/KnowledgeBaseDetail'
 
 const { Sider, Content } = Layout
 
@@ -30,6 +33,11 @@ const menuItems = [
     key: '/bots',
     icon: <RobotOutlined />,
     label: '机器人',
+  },
+  {
+    key: '/knowledge-bases',
+    icon: <DatabaseOutlined />,
+    label: '知识库',
   },
 ]
 
@@ -79,6 +87,8 @@ export default function App() {
             <Route path="/bots/new" element={<BotNew />} />
             <Route path="/bots/:id/edit" element={<BotEdit />} />
             <Route path="/bots/:id" element={<BotDetail />} />
+            <Route path="/knowledge-bases" element={<KnowledgeBases />} />
+            <Route path="/knowledge-bases/:id" element={<KnowledgeBaseDetail />} />
           </Routes>
         </Content>
       </Layout>

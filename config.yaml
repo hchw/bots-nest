@@ -28,6 +28,21 @@ mcps:
 # go-judge 配置
 go_judge_endpoint: "http://localhost:5050"
 
+# Weaviate 向量数据库配置
+weaviate:
+  endpoint: "localhost:8079"
+  scheme: "http"
+  api_key: ""
+
+# 知识库配置
+knowledge_base:
+  max_file_size: 52428800
+  allowed_extensions: [".md", ".pdf", ".docx", ".txt", ".csv"]
+  chunk_size: 500
+  chunk_overlap: 50
+  search_default_top_k: 5
+  search_hybrid_alpha: 0.5
+
 # Bots (机器人配置)
 bots:
   - name: "my-bot"
