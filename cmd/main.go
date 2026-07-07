@@ -4,15 +4,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/api"
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
+	"github.com/hchw/bots-nest/internal/knowledge"
 	"github.com/hchw/bots-nest/internal/web"
+	"github.com/hchw/bots-nest/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
@@ -59,13 +63,57 @@ func main() {
 
 	log.Println("数据库初始化完成")
 
-	botManager := bot.NewBotManager(cfg)
+	// Initialize knowledge base components
+	var weaviateClient *knowledge.WeaviateClient
+	embedder := knowledge.NewEmbedder()
+	wsHub := ws.NewHub()
+	if cfg.Weaviate.Endpoint != "" {
+		var err error
+		weaviateClient, err = knowledge.NewWeaviateClient(
+			cfg.Weaviate.Endpoint,
+			cfg.Weaviate.Scheme,
+			cfg.Weaviate.APIKey,
+		)
+		if err != nil {
+			log.Printf("[Knowledge] Weaviate 客户端初始化失败: %v", err)
+		} else {
+			log.Println("[Knowledge] Weaviate 客户端初始化成功")
+			ctx := context.Background()
+			if err := weaviateClient.WaitForReady(ctx); err != nil {
+				log.Printf("[Knowledge] Weaviate 未就绪: %v", err)
+			} else {
+				log.Println("[Knowledge] Weaviate 已就绪")
+				for i := 0; i < 3; i++ {
+					if err := weaviateClient.CreateCollection(ctx); err != nil {
+						log.Printf("[Knowledge] 创建集合失败 (第%d次重试): %v", i+1, err)
+						time.Sleep(time.Second)
+						continue
+					}
+					break
+				}
+			}
+		}
+	} else {
+		log.Println("[Knowledge] Weaviate 未配置，知识库功能禁用")
+	}
+
+	importManager := knowledge.NewImportTaskManager(
+		weaviateClient,
+		embedder,
+		&cfg.KnowledgeBase,
+		wsHub,
+		"./data/knowledge_files",
+	)
+
+	botManager := bot.NewBotManager(cfg, weaviateClient)
 	botManager.LoadFromDB()
 
 	r := gin.Default()
 
-	handler := api.NewHandler(botManager, cfg)
+	handler := api.NewHandler(botManager, cfg, weaviateClient, wsHub, importManager)
 	handler.RegisterRoutes(r)
+
+	r.GET("/ws/tasks", ws.WSHandler(wsHub))
 
 	web.ServeStatic(r)
 

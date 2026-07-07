@@ -24,14 +24,14 @@ func newTestConfig() *config.Config {
 }
 
 func TestNewBotManager(t *testing.T) {
-	bm := NewBotManager(newTestConfig())
+	bm := NewBotManager(newTestConfig(), nil)
 	if bm == nil {
 		t.Fatal("bm 不应为 nil")
 	}
 }
 
 func TestBotManagerAddGet(t *testing.T) {
-	bm := NewBotManager(newTestConfig())
+	bm := NewBotManager(newTestConfig(), nil)
 	bot := &BotInstance{ID: "bot1"}
 	bm.AddBot("bot1", bot)
 	got := bm.GetBot("bot1")
@@ -44,7 +44,7 @@ func TestBotManagerAddGet(t *testing.T) {
 }
 
 func TestBotManagerRemove(t *testing.T) {
-	bm := NewBotManager(newTestConfig())
+	bm := NewBotManager(newTestConfig(), nil)
 	bm.AddBot("bot1", &BotInstance{ID: "bot1"})
 	bm.RemoveBot("bot1")
 	got := bm.GetBot("bot1")
@@ -54,7 +54,7 @@ func TestBotManagerRemove(t *testing.T) {
 }
 
 func TestBotManagerGetAll(t *testing.T) {
-	bm := NewBotManager(newTestConfig())
+	bm := NewBotManager(newTestConfig(), nil)
 	bm.AddBot("bot1", &BotInstance{ID: "bot1"})
 	bm.AddBot("bot2", &BotInstance{ID: "bot2"})
 	all := bm.GetAll()

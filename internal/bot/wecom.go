@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hchw/bots-nest/internal/knowledge"
 )
 
 const wecomWSURL = "wss://openws.work.weixin.qq.com"
@@ -326,11 +327,12 @@ func (w *WeComClient) IsConnected() bool {
 }
 
 type BotInstance struct {
-	ID         string
-	Config     BotConfig
-	WeCom      *WeComClient
-	SkillEng   *SkillEngine
-	SessionMgr *SessionManager
+	ID             string
+	Config         BotConfig
+	WeCom          *WeComClient
+	SkillEng       *SkillEngine
+	SessionMgr     *SessionManager
+	WeaviateClient *knowledge.WeaviateClient
 }
 
 type BotConfig struct {

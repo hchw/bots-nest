@@ -147,4 +147,52 @@ export const deleteSkillTool = (botId: string, skillId: number, toolId: number) 
 export const polishSkillTool = (botId: string, skillId: number, toolId: number) =>
   api.post<{ code: string; prompt: string }>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/polish`)
 export const debugSkillTool = (botId: string, skillId: number, toolId: number, data?: { language?: string; code?: string }) =>
-  api.post<DebugResult>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/debug`, data)
+	api.post<DebugResult>(`/bots/${botId}/skills/${skillId}/tools/${toolId}/debug`, data)
+
+export interface KnowledgeBase {
+  id: string
+  name: string
+  description: string
+  embedding_provider_id: string
+  embedding_model: string
+  file_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ImportTask {
+  id: string
+  kb_id: string
+  file_name: string
+  file_size: number
+  status: string
+  total_chunks: number
+  processed_chunks: number
+  error: string
+  created_at: string
+  updated_at: string
+}
+
+export interface BotBinding {
+  id: number
+  bot_id: string
+  kb_id: string
+}
+
+export const getKnowledgeBases = () => api.get<KnowledgeBase[]>('/knowledge-bases')
+export const createKnowledgeBase = (data: { id: string; name: string; description?: string; embedding_provider_id: string; embedding_model: string }) =>
+  api.post<KnowledgeBase>('/knowledge-bases', data)
+export const getKnowledgeBase = (id: string) => api.get<KnowledgeBase>(`/knowledge-bases/${id}`)
+export const updateKnowledgeBase = (id: string, data: { name?: string; description?: string; embedding_provider_id?: string; embedding_model?: string }) =>
+  api.put<KnowledgeBase>(`/knowledge-bases/${id}`, data)
+export const deleteKnowledgeBase = (id: string) => api.delete(`/knowledge-bases/${id}`)
+export const uploadFile = (kbId: string, file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post<{ task_id: string }>(`/knowledge-bases/${kbId}/upload`, formData)
+}
+export const getImportTasks = (kbId: string) => api.get<ImportTask[]>(`/knowledge-bases/${kbId}/tasks`)
+export const getImportTask = (taskId: string) => api.get<ImportTask>(`/import-tasks/${taskId}`)
+export const getBotBindings = (botId: string) => api.get<BotBinding[]>(`/bots/${botId}/bindings`)
+export const updateBotBindings = (botId: string, data: { kb_ids: string[] }) =>
+  api.put<BotBinding[]>(`/bots/${botId}/bindings`, data)

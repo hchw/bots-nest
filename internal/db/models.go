@@ -94,3 +94,34 @@ type Message struct {
 	Expired    bool      `gorm:"default:0" json:"expired"`
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+type KnowledgeBase struct {
+	ID                  string    `gorm:"primaryKey;size:255" json:"id"`
+	Name                string    `gorm:"not null" json:"name"`
+	Description         string    `gorm:"type:text" json:"description"`
+	EmbeddingProviderID string    `gorm:"size:255;not null" json:"embedding_provider_id"`
+	EmbeddingModel      string    `gorm:"size:255;not null" json:"embedding_model"`
+	FileCount           int       `gorm:"default:0" json:"file_count"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+type ImportTask struct {
+	ID               string    `gorm:"primaryKey;size:255" json:"id"`
+	KnowledgeBaseID  string    `gorm:"not null;index" json:"kb_id"`
+	FileName         string    `gorm:"not null" json:"file_name"`
+	FilePath         string    `gorm:"default:''" json:"file_path"`
+	FileSize         int64     `json:"file_size"`
+	Status           string    `gorm:"default:pending" json:"status"`
+	TotalChunks      int       `gorm:"default:0" json:"total_chunks"`
+	ProcessedChunks  int       `gorm:"default:0" json:"processed_chunks"`
+	Error            string    `gorm:"type:text" json:"error"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type BotKnowledgeBinding struct {
+	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	BotID           string    `gorm:"not null;index" json:"bot_id"`
+	KnowledgeBaseID string    `gorm:"not null;index" json:"kb_id"`
+}

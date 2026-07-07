@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, Form, Input, InputNumber, Select, AutoComplete, Button, message, Spin, Typography, Table, Popconfirm, Space, Tag, Modal, Switch } from 'antd'
 import { ArrowLeftOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ToolOutlined } from '@ant-design/icons'
-import { getLLMProviders, getProviderModels, getBot, getBotSkills, createSkill, updateSkill, deleteSkill, updateBot, LLMProvider, Bot, Skill } from '../api'
+import { getLLMProviders, getProviderModels, getBot, getBotSkills, createSkill, updateSkill, deleteSkill, updateBot, getKnowledgeBases, getBotBindings, updateBotBindings, LLMProvider, Bot, Skill, KnowledgeBase } from '../api'
 import ToolPanel from '../components/ToolPanel'
 
 const { Title } = Typography
@@ -22,6 +22,8 @@ export default function BotEdit() {
   const [toolSkill, setToolSkill] = useState<Skill | null>(null)
   const [skillForm] = Form.useForm()
   const [form] = Form.useForm()
+  const [allKBs, setAllKBs] = useState<KnowledgeBase[]>([])
+  const [selectedKBIDs, setSelectedKBIDs] = useState<string[]>([])
 
   const load = () => {
     if (!id) return
@@ -30,12 +32,16 @@ export default function BotEdit() {
       getBot(id),
       getLLMProviders(),
       getBotSkills(id),
+      getKnowledgeBases(),
+      getBotBindings(id),
     ])
-      .then(([botRes, provRes, skillsRes]) => {
+      .then(([botRes, provRes, skillsRes, kbRes, bindingRes]) => {
         const botData = botRes.data
         setBot(botData)
         setProviders(provRes.data)
         setSkills(skillsRes.data)
+        setAllKBs(kbRes.data)
+        setSelectedKBIDs(bindingRes.data.map((b: any) => b.kb_id))
         form.setFieldsValue(botData)
         if (botData.llm_provider_id) {
           handleProviderChange(botData.llm_provider_id)
@@ -245,6 +251,35 @@ export default function BotEdit() {
           )}
         </Form>
       </Modal>
+
+      <Card title="知识库绑定" style={{ marginBottom: 24 }}>
+        <Select
+          mode="multiple"
+          style={{ width: '100%' }}
+          placeholder="选择绑定的知识库"
+          value={selectedKBIDs}
+          onChange={setSelectedKBIDs}
+          options={allKBs.map(kb => ({ label: `${kb.name} (${kb.id})`, value: kb.id }))}
+        />
+        <Button
+          type="primary"
+          style={{ marginTop: 12 }}
+          onClick={async () => {
+            try {
+              await updateBotBindings(id!, { kb_ids: selectedKBIDs })
+              message.success('知识库绑定已更新')
+              if (id) {
+                const res = await getBotBindings(id)
+                setSelectedKBIDs(res.data.map((b: any) => b.kb_id))
+              }
+            } catch (err: any) {
+              message.error(err.response?.data?.error || '更新失败')
+            }
+          }}
+        >
+          保存绑定
+        </Button>
+      </Card>
 
       {toolSkill && id && (
         <Modal
