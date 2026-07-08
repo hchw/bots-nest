@@ -153,6 +153,8 @@ export interface KnowledgeBase {
   id: string
   name: string
   description: string
+  auto_summary: string
+  embedding_mode: string
   embedding_provider_id: string
   embedding_model: string
   file_count: number
@@ -180,10 +182,10 @@ export interface BotBinding {
 }
 
 export const getKnowledgeBases = () => api.get<KnowledgeBase[]>('/knowledge-bases')
-export const createKnowledgeBase = (data: { id: string; name: string; description?: string; embedding_provider_id: string; embedding_model: string }) =>
+export const createKnowledgeBase = (data: { id: string; name: string; description?: string; embedding_mode?: string; embedding_provider_id?: string; embedding_model?: string }) =>
   api.post<KnowledgeBase>('/knowledge-bases', data)
 export const getKnowledgeBase = (id: string) => api.get<KnowledgeBase>(`/knowledge-bases/${id}`)
-export const updateKnowledgeBase = (id: string, data: { name?: string; description?: string; embedding_provider_id?: string; embedding_model?: string }) =>
+export const updateKnowledgeBase = (id: string, data: { name?: string; description?: string; embedding_mode?: string; embedding_provider_id?: string; embedding_model?: string }) =>
   api.put<KnowledgeBase>(`/knowledge-bases/${id}`, data)
 export const deleteKnowledgeBase = (id: string) => api.delete(`/knowledge-bases/${id}`)
 export const uploadFile = (kbId: string, file: File) => {
@@ -193,6 +195,8 @@ export const uploadFile = (kbId: string, file: File) => {
 }
 export const getImportTasks = (kbId: string) => api.get<ImportTask[]>(`/knowledge-bases/${kbId}/tasks`)
 export const getImportTask = (taskId: string) => api.get<ImportTask>(`/import-tasks/${taskId}`)
+export const deleteImportTask = (kbId: string, taskId: string) => api.delete(`/knowledge-bases/${kbId}/tasks/${taskId}`)
+export const reimportFile = (kbId: string, taskId: string) => api.post(`/knowledge-bases/${kbId}/tasks/${taskId}/reload`)
 export const getBotBindings = (botId: string) => api.get<BotBinding[]>(`/bots/${botId}/bindings`)
 export const updateBotBindings = (botId: string, data: { kb_ids: string[] }) =>
   api.put<BotBinding[]>(`/bots/${botId}/bindings`, data)

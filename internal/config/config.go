@@ -57,13 +57,20 @@ type WeaviateConfig struct {
 	APIKey    string `yaml:"api_key"`
 }
 
+type EmbeddingConfig struct {
+	ModelPath string `yaml:"model_path"`
+	ModelURL  string `yaml:"model_url"`
+	Enabled   bool   `yaml:"enabled"`
+}
+
 type KnowledgeBaseConfig struct {
-	MaxFileSize       int64    `yaml:"max_file_size"`
-	AllowedExtensions []string `yaml:"allowed_extensions"`
-	ChunkSize         int      `yaml:"chunk_size"`
-	ChunkOverlap      int      `yaml:"chunk_overlap"`
-	SearchDefaultTopK int      `yaml:"search_default_top_k"`
-	SearchHybridAlpha float64  `yaml:"search_hybrid_alpha"`
+	MaxFileSize       int64           `yaml:"max_file_size"`
+	AllowedExtensions []string        `yaml:"allowed_extensions"`
+	ChunkSize         int             `yaml:"chunk_size"`
+	ChunkOverlap      int             `yaml:"chunk_overlap"`
+	SearchDefaultTopK int             `yaml:"search_default_top_k"`
+	SearchHybridAlpha float64         `yaml:"search_hybrid_alpha"`
+	Embedding         EmbeddingConfig `yaml:"embedding"`
 }
 
 type Config struct {
@@ -106,6 +113,13 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Bots == nil {
 		cfg.Bots = []BotConfig{}
+	}
+
+	if cfg.KnowledgeBase.Embedding.ModelPath == "" {
+		cfg.KnowledgeBase.Embedding.ModelPath = "data/embedding/models/all-MiniLM-L6-v2.Q5_K_M.gguf"
+	}
+	if cfg.KnowledgeBase.Embedding.ModelURL == "" {
+		cfg.KnowledgeBase.Embedding.ModelURL = "https://huggingface.co/ashleyliu31/all-MiniLM-L6-v2-GGUF/resolve/main/all-MiniLM-L6-v2.Q5_K_M.gguf"
 	}
 
 	if cfg.SkillsDir == "" {

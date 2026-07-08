@@ -99,6 +99,8 @@ type KnowledgeBase struct {
 	ID                  string    `gorm:"primaryKey;size:255" json:"id"`
 	Name                string    `gorm:"not null" json:"name"`
 	Description         string    `gorm:"type:text" json:"description"`
+	AutoSummary         string    `gorm:"type:text" json:"auto_summary"`
+	EmbeddingMode       string    `gorm:"size:50;default:provider" json:"embedding_mode"`
 	EmbeddingProviderID string    `gorm:"size:255;not null" json:"embedding_provider_id"`
 	EmbeddingModel      string    `gorm:"size:255;not null" json:"embedding_model"`
 	FileCount           int       `gorm:"default:0" json:"file_count"`

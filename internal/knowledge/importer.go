@@ -18,21 +18,23 @@ import (
 )
 
 type ImportTaskManager struct {
-	weaviate   *WeaviateClient
-	embedder   *Embedder
-	cfg        *config.KnowledgeBaseConfig
-	hub        *ws.Hub
-	mu         sync.Mutex
-	storageDir string
+	weaviate        *WeaviateClient
+	embedder        Embedder
+	builtinEmbedder *BuiltinEmbedder
+	cfg             *config.KnowledgeBaseConfig
+	hub             *ws.Hub
+	mu              sync.Mutex
+	storageDir      string
 }
 
-func NewImportTaskManager(wc *WeaviateClient, embedder *Embedder, cfg *config.KnowledgeBaseConfig, hub *ws.Hub, storageDir string) *ImportTaskManager {
+func NewImportTaskManager(wc *WeaviateClient, embedder Embedder, builtinEmbedder *BuiltinEmbedder, cfg *config.KnowledgeBaseConfig, hub *ws.Hub, storageDir string) *ImportTaskManager {
 	return &ImportTaskManager{
-		weaviate:   wc,
-		embedder:   embedder,
-		cfg:        cfg,
-		hub:        hub,
-		storageDir: storageDir,
+		weaviate:        wc,
+		embedder:        embedder,
+		builtinEmbedder: builtinEmbedder,
+		cfg:             cfg,
+		hub:             hub,
+		storageDir:      storageDir,
 	}
 }
 
@@ -158,7 +160,14 @@ func (m *ImportTaskManager) processTask(task *db.ImportTask) {
 		for _, ch := range chunks[i:end] {
 			texts = append(texts, ch.Content)
 		}
-		vectors, err := m.embedder.Embed(kb.EmbeddingProviderID, kb.EmbeddingModel, texts)
+
+		var vectors [][]float32
+		var err error
+		if kb.EmbeddingMode == "builtin" && m.builtinEmbedder != nil {
+			vectors, err = m.builtinEmbedder.Embed("", "", texts)
+		} else {
+			vectors, err = m.embedder.Embed(kb.EmbeddingProviderID, kb.EmbeddingModel, texts)
+		}
 		if err != nil {
 			m.updateTaskError(task, fmt.Sprintf("向量化失败: %v", err))
 			return
@@ -213,6 +222,114 @@ func (m *ImportTaskManager) updateTaskError(task *db.ImportTask, errMsg string) 
 	})
 	m.hub.BroadcastTaskProgress(task.ID, "failed", task.TotalChunks, task.ProcessedChunks)
 	log.Printf("[Importer] 导入任务 %s 失败: %s", task.ID, errMsg)
+}
+
+func (m *ImportTaskManager) Recover() {
+	var tasks []db.ImportTask
+	db.DB.Where("status NOT IN ?", []string{"completed", "failed"}).Find(&tasks)
+	if len(tasks) == 0 {
+		return
+	}
+	log.Printf("[Importer] 恢复 %d 个中断的导入任务", len(tasks))
+	for i := range tasks {
+		task := tasks[i]
+		log.Printf("[Importer] 重新处理任务 %s: %s (状态: %s)", task.ID, task.FileName, task.Status)
+		// 非 pending 状态的任务可能是 crash 中断的，直接标记为失败避免循环 crash
+		if task.Status != "pending" {
+			m.updateTaskError(&task, "服务重启导致任务中断，请重新上传")
+			continue
+		}
+		go m.processTask(&task)
+	}
+}
+
+func (m *ImportTaskManager) DeleteFile(ctx context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var task db.ImportTask
+	if err := db.DB.Where("id = ?", taskID).First(&task).Error; err != nil {
+		return fmt.Errorf("导入任务未找到: %w", err)
+	}
+
+	if m.weaviate != nil {
+		if err := m.weaviate.DeleteBySourceFile(ctx, task.KnowledgeBaseID, task.FileName); err != nil {
+			return fmt.Errorf("删除向量数据失败: %w", err)
+		}
+	}
+
+	if task.FilePath != "" {
+		if err := os.Remove(task.FilePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[Importer] 删除本地文件失败 %s: %v", task.FilePath, err)
+		}
+	}
+
+	db.DB.Delete(&task)
+
+	var count int64
+	db.DB.Model(&db.ImportTask{}).
+		Where("knowledge_base_id = ? AND status = 'completed'", task.KnowledgeBaseID).
+		Count(&count)
+	db.DB.Model(&db.KnowledgeBase{}).
+		Where("id = ?", task.KnowledgeBaseID).
+		Update("file_count", count)
+
+	return nil
+}
+
+func (m *ImportTaskManager) DeleteFilesByKB(ctx context.Context, kbID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var tasks []db.ImportTask
+	if err := db.DB.Where("knowledge_base_id = ?", kbID).Find(&tasks).Error; err != nil {
+		return err
+	}
+
+	for _, task := range tasks {
+		if task.FilePath != "" {
+			if err := os.Remove(task.FilePath); err != nil && !os.IsNotExist(err) {
+				log.Printf("[Importer] 删除本地文件失败 %s: %v", task.FilePath, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (m *ImportTaskManager) ReimportFile(ctx context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var oldTask db.ImportTask
+	if err := db.DB.Where("id = ?", taskID).First(&oldTask).Error; err != nil {
+		return fmt.Errorf("导入任务未找到: %w", err)
+	}
+
+	file, err := os.Open(oldTask.FilePath)
+	if err != nil {
+		return fmt.Errorf("打开源文件失败: %w", err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("读取文件信息失败: %w", err)
+	}
+
+	if m.weaviate != nil {
+		if err := m.weaviate.DeleteBySourceFile(ctx, oldTask.KnowledgeBaseID, oldTask.FileName); err != nil {
+			return fmt.Errorf("删除旧向量数据失败: %w", err)
+		}
+	}
+
+	task, err := m.ReceiveFile(oldTask.KnowledgeBaseID, oldTask.FileName, file, stat.Size())
+	if err != nil {
+		return fmt.Errorf("重新导入失败: %w", err)
+	}
+
+	log.Printf("[Importer] 重新导入任务 %s: %s", task.ID, task.FileName)
+	return nil
 }
 
 func splitIntoLines(content string) []string {

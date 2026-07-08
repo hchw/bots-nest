@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Table, Button, Upload, Tag, Progress, message, Descriptions, Space } from 'antd'
-import { UploadOutlined, ArrowLeftOutlined } from '@ant-design/icons'
-import { getKnowledgeBase, uploadFile, getImportTasks, KnowledgeBase, ImportTask } from '../api'
+import { Card, Table, Button, Upload, Tag, Progress, message, Descriptions, Space, Popconfirm, Typography } from 'antd'
+import { UploadOutlined, ArrowLeftOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { getKnowledgeBase, uploadFile, getImportTasks, deleteImportTask, reimportFile, KnowledgeBase, ImportTask } from '../api'
 
 const WS_BASE = window.location.origin.replace(/^http/, 'ws') + '/ws/tasks'
 
@@ -51,6 +51,25 @@ export default function KnowledgeBaseDetail() {
     }
     return () => { wsRef.current?.close() }
   }, [])
+
+  const handleDelete = async (taskId: string) => {
+    try {
+      await deleteImportTask(id!, taskId)
+      message.success('已删除')
+      loadTasks()
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '删除失败')
+    }
+  }
+
+  const handleReload = async (taskId: string) => {
+    try {
+      await reimportFile(id!, taskId)
+      message.success('重新加载中')
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '重新加载失败')
+    }
+  }
 
   const handleUpload = async (file: File) => {
     setUploading(true)
@@ -108,6 +127,21 @@ export default function KnowledgeBaseDetail() {
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180,
       render: (v: string) => new Date(v).toLocaleString(),
     },
+    {
+      title: '操作', key: 'action', width: 160,
+      render: (_: any, record: ImportTask) => (
+        <Space>
+          {record.status === 'completed' && (
+            <Popconfirm title="确认重新加载此文件？" onConfirm={() => handleReload(record.id)}>
+              <Button type="link" size="small" icon={<ReloadOutlined />}>重新加载</Button>
+            </Popconfirm>
+          )}
+          <Popconfirm title="确认删除？将同时删除向量数据" onConfirm={() => handleDelete(record.id)}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
   ]
 
   return (
@@ -121,10 +155,14 @@ export default function KnowledgeBaseDetail() {
           <Descriptions column={2}>
             <Descriptions.Item label="ID">{kb.id}</Descriptions.Item>
             <Descriptions.Item label="文件数">{kb.file_count}</Descriptions.Item>
+            <Descriptions.Item label="Embedding 方式">{kb.embedding_mode === 'builtin' ? '内置模型' : 'LLM Provider'}</Descriptions.Item>
             <Descriptions.Item label="Embedding Provider">{kb.embedding_provider_id}</Descriptions.Item>
             <Descriptions.Item label="Embedding Model">{kb.embedding_model}</Descriptions.Item>
             <Descriptions.Item label="描述">{kb.description || '-'}</Descriptions.Item>
             <Descriptions.Item label="创建时间">{new Date(kb.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="自动生成描述" span={2}>
+              {kb.auto_summary ? kb.auto_summary : <Typography.Text type="secondary">暂无（在机器人绑定本知识库后自动生成）</Typography.Text>}
+            </Descriptions.Item>
           </Descriptions>
         </Card>
       )}

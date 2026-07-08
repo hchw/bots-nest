@@ -59,6 +59,10 @@ type openAIResponse struct {
 			ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 	} `json:"choices"`
+	Error *struct {
+		Type    string `json:"type,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"error,omitempty"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
@@ -123,8 +127,12 @@ func (c *OpenAIClient) Chat(messages []ChatMessage, tools []ToolDefinition) (*Ch
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
+	if openAIResp.Error != nil && openAIResp.Error.Message != "" {
+		return nil, fmt.Errorf("API error [%s]: %s", openAIResp.Error.Type, openAIResp.Error.Message)
+	}
+
 	if len(openAIResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
+		return nil, fmt.Errorf("no choices in response (status=%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	choice := openAIResp.Choices[0]

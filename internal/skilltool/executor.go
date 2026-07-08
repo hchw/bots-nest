@@ -48,15 +48,15 @@ type judgeFile struct {
 }
 
 type judgeCmd struct {
-	Args          []string              `json:"args"`
-	Env           []string              `json:"env"`
-	Files         []judgeFile           `json:"files"`
-	CPULimit      uint64                `json:"cpuLimit"`
-	MemoryLimit   uint64                `json:"memoryLimit"`
-	ProcLimit     uint64                `json:"procLimit"`
-	CopyIn        map[string]judgeFile  `json:"copyIn,omitempty"`
-	CopyOut       []string              `json:"copyOut,omitempty"`
-	CopyOutCached []string              `json:"copyOutCached,omitempty"`
+	Args          []string             `json:"args"`
+	Env           []string             `json:"env"`
+	Files         []judgeFile          `json:"files"`
+	CPULimit      uint64               `json:"cpuLimit"`
+	MemoryLimit   uint64               `json:"memoryLimit"`
+	ProcLimit     uint64               `json:"procLimit"`
+	CopyIn        map[string]judgeFile `json:"copyIn,omitempty"`
+	CopyOut       []string             `json:"copyOut,omitempty"`
+	CopyOutCached []string             `json:"copyOutCached,omitempty"`
 }
 
 type judgeRequest struct {

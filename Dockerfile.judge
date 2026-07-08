@@ -1,7 +1,5 @@
 FROM criyle/go-judge:latest
 
-FROM criyle/go-judge:latest
-
 RUN echo "deb http://mirrors.aliyun.com/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
     echo "deb-src http://mirrors.aliyun.com/debian trixie main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian trixie-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \

@@ -66,6 +66,26 @@ func main() {
 	// Initialize knowledge base components
 	var weaviateClient *knowledge.WeaviateClient
 	embedder := knowledge.NewEmbedder()
+	var builtinEmbedder *knowledge.BuiltinEmbedder
+
+	// Initialize builtin embedding if enabled
+	if cfg.KnowledgeBase.Embedding.Enabled {
+		log.Printf("[Knowledge] 内置 embedding 已启用，模型路径: %s", cfg.KnowledgeBase.Embedding.ModelPath)
+		if err := knowledge.EnsureModel(cfg.KnowledgeBase.Embedding.ModelPath, cfg.KnowledgeBase.Embedding.ModelURL); err != nil {
+			log.Printf("[Knowledge] 模型下载失败（不阻止启动）: %v", err)
+		} else {
+			be, err := knowledge.NewBuiltinEmbedder(cfg.KnowledgeBase.Embedding.ModelPath)
+			if err != nil {
+				log.Printf("[Knowledge] 模型加载失败（不阻止启动）: %v", err)
+			} else {
+				builtinEmbedder = be
+				log.Println("[Knowledge] 内置 embedding 模型加载成功")
+			}
+		}
+	} else {
+		log.Println("[Knowledge] 内置 embedding 未启用")
+	}
+
 	wsHub := ws.NewHub()
 	if cfg.Weaviate.Endpoint != "" {
 		var err error
@@ -100,12 +120,15 @@ func main() {
 	importManager := knowledge.NewImportTaskManager(
 		weaviateClient,
 		embedder,
+		builtinEmbedder,
 		&cfg.KnowledgeBase,
 		wsHub,
 		"./data/knowledge_files",
 	)
 
-	botManager := bot.NewBotManager(cfg, weaviateClient)
+	importManager.Recover()
+
+	botManager := bot.NewBotManager(cfg, weaviateClient, builtinEmbedder)
 	botManager.LoadFromDB()
 
 	r := gin.Default()

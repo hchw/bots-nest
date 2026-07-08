@@ -327,12 +327,13 @@ func (w *WeComClient) IsConnected() bool {
 }
 
 type BotInstance struct {
-	ID             string
-	Config         BotConfig
-	WeCom          *WeComClient
-	SkillEng       *SkillEngine
-	SessionMgr     *SessionManager
-	WeaviateClient *knowledge.WeaviateClient
+	ID               string
+	Config           BotConfig
+	WeCom            *WeComClient
+	SkillEng         *SkillEngine
+	SessionMgr       *SessionManager
+	WeaviateClient   *knowledge.WeaviateClient
+	BuiltinEmbedder  *knowledge.BuiltinEmbedder
 }
 
 type BotConfig struct {
