@@ -84,6 +84,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.DELETE("/knowledge-bases/:id", h.deleteKnowledgeBase)
 		api.POST("/knowledge-bases/:id/upload", h.uploadFile)
 		api.GET("/knowledge-bases/:id/tasks", h.listImportTasks)
+		api.DELETE("/knowledge-bases/:id/tasks/:taskId", h.deleteImportTask)
+		api.POST("/knowledge-bases/:id/tasks/:taskId/reload", h.reimportFile)
 		api.GET("/import-tasks/:id", h.getImportTask)
 		api.GET("/bots/:id/bindings", h.getBotBindings)
 		api.PUT("/bots/:id/bindings", h.updateBotBindings)
@@ -963,11 +965,21 @@ func (h *Handler) createKnowledgeBase(c *gin.Context) {
 		ID                  string `json:"id" binding:"required"`
 		Name                string `json:"name" binding:"required"`
 		Description         string `json:"description"`
-		EmbeddingProviderID string `json:"embedding_provider_id" binding:"required"`
-		EmbeddingModel      string `json:"embedding_model" binding:"required"`
+		EmbeddingMode       string `json:"embedding_mode"`
+		EmbeddingProviderID string `json:"embedding_provider_id"`
+		EmbeddingModel      string `json:"embedding_model"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	if req.EmbeddingMode == "" {
+		req.EmbeddingMode = "provider"
+	}
+
+	if req.EmbeddingMode == "provider" && (req.EmbeddingProviderID == "" || req.EmbeddingModel == "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider 模式时 embedding_provider_id 和 embedding_model 为必填"})
 		return
 	}
 
@@ -975,6 +987,7 @@ func (h *Handler) createKnowledgeBase(c *gin.Context) {
 		ID:                  req.ID,
 		Name:                req.Name,
 		Description:         req.Description,
+		EmbeddingMode:       req.EmbeddingMode,
 		EmbeddingProviderID: req.EmbeddingProviderID,
 		EmbeddingModel:      req.EmbeddingModel,
 	}
@@ -1006,6 +1019,7 @@ func (h *Handler) updateKnowledgeBase(c *gin.Context) {
 	var req struct {
 		Name                *string `json:"name"`
 		Description         *string `json:"description"`
+		EmbeddingMode       *string `json:"embedding_mode"`
 		EmbeddingProviderID *string `json:"embedding_provider_id"`
 		EmbeddingModel      *string `json:"embedding_model"`
 	}
@@ -1020,6 +1034,9 @@ func (h *Handler) updateKnowledgeBase(c *gin.Context) {
 	}
 	if req.Description != nil {
 		updates["description"] = *req.Description
+	}
+	if req.EmbeddingMode != nil {
+		updates["embedding_mode"] = *req.EmbeddingMode
 	}
 	if req.EmbeddingProviderID != nil {
 		updates["embedding_provider_id"] = *req.EmbeddingProviderID
@@ -1050,6 +1067,12 @@ func (h *Handler) deleteKnowledgeBase(c *gin.Context) {
 	if h.weaviateClient != nil {
 		if err := h.weaviateClient.DeleteByKBID(context.Background(), id); err != nil {
 			log.Printf("[Knowledge] 删除 Weaviate 数据失败: %v", err)
+		}
+	}
+
+	if h.importManager != nil {
+		if err := h.importManager.DeleteFilesByKB(context.Background(), id); err != nil {
+			log.Printf("[Knowledge] 删除本地文件失败: %v", err)
 		}
 	}
 
@@ -1108,6 +1131,38 @@ func (h *Handler) getImportTask(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
+func (h *Handler) deleteImportTask(c *gin.Context) {
+	taskID := c.Param("taskId")
+
+	if h.importManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "导入管理器未初始化"})
+		return
+	}
+
+	if err := h.importManager.DeleteFile(context.Background(), taskID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+}
+
+func (h *Handler) reimportFile(c *gin.Context) {
+	taskID := c.Param("taskId")
+
+	if h.importManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "导入管理器未初始化"})
+		return
+	}
+
+	if err := h.importManager.ReimportFile(context.Background(), taskID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "重新加载中"})
+}
+
 func (h *Handler) getBotBindings(c *gin.Context) {
 	botID := c.Param("id")
 	var bindings []db.BotKnowledgeBinding
@@ -1141,7 +1196,56 @@ func (h *Handler) updateBotBindings(c *gin.Context) {
 		h.botManager.StartBot(botID)
 	}
 
+	h.refreshKnowledgeSummaries(botID, req.KBIDs)
+
 	var bindings []db.BotKnowledgeBinding
 	db.DB.Where("bot_id = ?", botID).Find(&bindings)
 	c.JSON(http.StatusOK, bindings)
+}
+
+func (h *Handler) refreshKnowledgeSummaries(botID string, kbIDs []string) {
+	log.Printf("[KB-Summary] 触发知识库摘要刷新, bot=%s, kb数量=%d", botID, len(kbIDs))
+	if h.weaviateClient == nil || len(kbIDs) == 0 {
+		return
+	}
+
+	var bot db.Bot
+	if err := db.DB.Where("id = ?", botID).First(&bot).Error; err != nil {
+		log.Printf("[KB-Summary] 获取机器人 %s 失败: %v", botID, err)
+		return
+	}
+	var provider db.LLMProvider
+	if err := db.DB.Where("id = ?", bot.LLMProviderID).First(&provider).Error; err != nil {
+		log.Printf("[KB-Summary] 获取机器人 %s 的 LLM Provider 失败: %v", botID, err)
+		return
+	}
+	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, bot.LLMModel)
+	llmClient.Temperature = 0.3
+
+	ctx := context.Background()
+	for _, kbID := range kbIDs {
+		var kb db.KnowledgeBase
+		if err := db.DB.Where("id = ?", kbID).First(&kb).Error; err != nil {
+			continue
+		}
+		if kb.AutoSummary != "" {
+			continue
+		}
+		samples, err := h.weaviateClient.SampleChunks(ctx, kbID, 8)
+		if err != nil {
+			log.Printf("[KB-Summary] 采样知识库 %s 失败: %v", kbID, err)
+			continue
+		}
+		if len(samples) == 0 {
+			continue
+		}
+		summary, err := knowledge.GenerateKBSummary(ctx, llmClient, samples)
+		if err != nil {
+			log.Printf("[KB-Summary] 生成知识库 %s 摘要失败: %v", kbID, err)
+			continue
+		}
+		if err := db.DB.Model(&kb).Update("auto_summary", summary).Error; err != nil {
+			log.Printf("[KB-Summary] 保存知识库 %s 摘要失败: %v", kbID, err)
+		}
+	}
 }

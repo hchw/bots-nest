@@ -233,6 +233,79 @@ func (c *WeaviateClient) HybridSearch(ctx context.Context, query string, queryVe
 	return results, nil
 }
 
+func (c *WeaviateClient) SampleChunks(ctx context.Context, kbID string, limit int) ([]SearchResult, error) {
+	fields := []graphql.Field{
+		{Name: "content"},
+		{Name: "kb_id"},
+		{Name: "source_file"},
+		{Name: "chunk_index"},
+		{Name: "doc_title"},
+	}
+
+	builder := c.client.GraphQL().Get().
+		WithClassName(KnowledgeChunkClass).
+		WithFields(fields...)
+
+	if kbID != "" {
+		where := filters.Where().
+			WithPath([]string{"kb_id"}).
+			WithOperator(filters.Equal).
+			WithValueString(kbID)
+		builder = builder.WithWhere(where)
+	}
+
+	if limit > 0 {
+		builder = builder.WithLimit(limit)
+	} else {
+		builder = builder.WithLimit(10)
+	}
+
+	res, err := builder.Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("采样知识库 chunk 失败: %w", err)
+	}
+
+	if res.Errors != nil {
+		return nil, fmt.Errorf("GraphQL 错误: %v", res.Errors)
+	}
+
+	data := res.Data
+	get, ok := data["Get"].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+	chunksRaw, ok := get[KnowledgeChunkClass].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	results := make([]SearchResult, 0, len(chunksRaw))
+	for _, raw := range chunksRaw {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		r := SearchResult{}
+		if v, ok := item["content"].(string); ok {
+			r.Content = v
+		}
+		if v, ok := item["kb_id"].(string); ok {
+			r.KBID = v
+		}
+		if v, ok := item["source_file"].(string); ok {
+			r.SourceFile = v
+		}
+		if v, ok := item["chunk_index"].(float64); ok {
+			r.ChunkIndex = int(v)
+		}
+		if v, ok := item["doc_title"].(string); ok {
+			r.DocTitle = v
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
 func (c *WeaviateClient) DeleteByKBID(ctx context.Context, kbID string) error {
 	where := filters.Where().
 		WithPath([]string{"kb_id"}).
@@ -245,6 +318,24 @@ func (c *WeaviateClient) DeleteByKBID(ctx context.Context, kbID string) error {
 		Do(ctx)
 	if err != nil {
 		return fmt.Errorf("删除知识库 chunk 失败: %w", err)
+	}
+	return nil
+}
+
+func (c *WeaviateClient) DeleteBySourceFile(ctx context.Context, kbID, sourceFile string) error {
+	where := filters.Where().
+		WithOperator(filters.And).
+		WithOperands([]*filters.WhereBuilder{
+			filters.Where().WithPath([]string{"kb_id"}).WithOperator(filters.Equal).WithValueString(kbID),
+			filters.Where().WithPath([]string{"source_file"}).WithOperator(filters.Equal).WithValueString(sourceFile),
+		})
+
+	_, err := c.client.Batch().ObjectsBatchDeleter().
+		WithClassName(KnowledgeChunkClass).
+		WithWhere(where).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("删除文件 chunk 失败: %w", err)
 	}
 	return nil
 }

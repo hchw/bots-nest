@@ -134,17 +134,19 @@ func (m *SessionManager) TotalTokens(sessionKey string) (int, error) {
 }
 
 type BotManager struct {
-	mu             sync.Mutex
-	bots           map[string]*BotInstance
-	cfg            *config.Config
-	weaviateClient *knowledge.WeaviateClient
+	mu              sync.Mutex
+	bots            map[string]*BotInstance
+	cfg             *config.Config
+	weaviateClient  *knowledge.WeaviateClient
+	builtinEmbedder *knowledge.BuiltinEmbedder
 }
 
-func NewBotManager(cfg *config.Config, wc *knowledge.WeaviateClient) *BotManager {
+func NewBotManager(cfg *config.Config, wc *knowledge.WeaviateClient, be *knowledge.BuiltinEmbedder) *BotManager {
 	return &BotManager{
-		bots:           make(map[string]*BotInstance),
-		cfg:            cfg,
-		weaviateClient: wc,
+		bots:            make(map[string]*BotInstance),
+		cfg:             cfg,
+		weaviateClient:  wc,
+		builtinEmbedder: be,
 	}
 }
 
@@ -251,10 +253,11 @@ func (m *BotManager) StartBot(botID string) error {
 			Enabled:          b.Enabled,
 			GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
 		},
-		WeCom:          wecom,
-		SkillEng:       skillEng,
-		SessionMgr:     NewSessionManager(b.ID),
-		WeaviateClient: m.weaviateClient,
+		WeCom:           wecom,
+		SkillEng:        skillEng,
+		SessionMgr:      NewSessionManager(b.ID),
+		WeaviateClient:  m.weaviateClient,
+		BuiltinEmbedder: m.builtinEmbedder,
 	}
 
 	wecom.SetMessageHandler(func(msg *WeComMessage) {
@@ -631,15 +634,22 @@ func (b *BotInstance) buildTools() []llm.ToolDefinition {
 		var bindings []db.BotKnowledgeBinding
 		db.DB.Where("bot_id = ?", b.ID).Find(&bindings)
 		if len(bindings) > 0 {
-			var kbNames []string
+			var kbParts []string
 			for _, binding := range bindings {
 				var kb db.KnowledgeBase
 				if err := db.DB.Where("id = ?", binding.KnowledgeBaseID).First(&kb).Error; err == nil {
-					kbNames = append(kbNames, kb.Name+" ("+kb.ID+")")
+					entry := kb.Name + " (" + kb.ID + ")"
+					if kb.Description != "" {
+						entry += "：" + kb.Description
+					}
+					if kb.AutoSummary != "" {
+						entry += "（内容概要：" + kb.AutoSummary + "）"
+					}
+					kbParts = append(kbParts, entry)
 				}
 			}
-			if len(kbNames) > 0 {
-				kbDesc = "当前可检索知识库：" + strings.Join(kbNames, "、")
+			if len(kbParts) > 0 {
+				kbDesc = "当前可检索知识库合集：\n" + strings.Join(kbParts, "\n")
 			}
 		}
 		if kbDesc == "" {
@@ -856,14 +866,25 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 
 		// Use first KB's embedding config
 		var firstKB db.KnowledgeBase
+		var embedErr error
 		if err := db.DB.Where("id = ?", kbIDs[0]).First(&firstKB).Error; err != nil {
 			return fmt.Sprintf("知识库 %s 未找到: %v", kbIDs[0], err)
 		}
 
-		embedder := knowledge.NewEmbedder()
-		vectors, err := embedder.Embed(firstKB.EmbeddingProviderID, firstKB.EmbeddingModel, []string{query})
-		if err != nil {
-			return "向量化查询失败: " + err.Error()
+		var vectors [][]float32
+		if firstKB.EmbeddingMode == "builtin" && b.BuiltinEmbedder != nil {
+			vectors, embedErr = b.BuiltinEmbedder.Embed("", "", []string{query})
+		} else if firstKB.EmbeddingMode == "provider" {
+			if firstKB.EmbeddingProviderID == "" || firstKB.EmbeddingModel == "" {
+				return "知识库未配置 embedding 提供商或模型，无法检索"
+			}
+			embedder := knowledge.NewEmbedder()
+			vectors, embedErr = embedder.Embed(firstKB.EmbeddingProviderID, firstKB.EmbeddingModel, []string{query})
+		} else {
+			return "知识库未配置有效的 embedding 模式，无法检索"
+		}
+		if embedErr != nil {
+			return "向量化查询失败: " + embedErr.Error()
 		}
 		queryVector := vectors[0]
 

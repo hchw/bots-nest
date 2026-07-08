@@ -11,10 +11,14 @@ import (
 	"github.com/hchw/bots-nest/internal/db"
 )
 
-type Embedder struct{}
+type Embedder interface {
+	Embed(providerID, model string, texts []string) ([][]float32, error)
+}
 
-func NewEmbedder() *Embedder {
-	return &Embedder{}
+type ProviderEmbedder struct{}
+
+func NewEmbedder() Embedder {
+	return &ProviderEmbedder{}
 }
 
 type openAIEmbedRequest struct {
@@ -28,7 +32,7 @@ type openAIEmbedResponse struct {
 	} `json:"data"`
 }
 
-func (e *Embedder) Embed(providerID, model string, texts []string) ([][]float32, error) {
+func (e *ProviderEmbedder) Embed(providerID, model string, texts []string) ([][]float32, error) {
 	var provider db.LLMProvider
 	if err := db.DB.Where("id = ?", providerID).First(&provider).Error; err != nil {
 		return nil, fmt.Errorf("embedding provider %s 未找到: %w", providerID, err)

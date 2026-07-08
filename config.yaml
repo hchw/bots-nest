@@ -42,6 +42,10 @@ knowledge_base:
   chunk_overlap: 50
   search_default_top_k: 5
   search_hybrid_alpha: 0.5
+  embedding:
+    enabled: true
+    model_url: "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf"
+    model_path: "data/embedding/models/all-MiniLM-L6-v2-Q8_0.gguf"
 
 # Bots (机器人配置)
 bots:
