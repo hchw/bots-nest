@@ -12,15 +12,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
 	"github.com/hchw/bots-nest/internal/knowledge"
 	"github.com/hchw/bots-nest/internal/llm"
 	"github.com/hchw/bots-nest/internal/skilltool"
+	"github.com/hchw/bots-nest/internal/task"
 )
 
-const DefaultSystemPrompt = "你是智能助手。"
+const DefaultSystemPrompt = "你是智能助手。当有可用工具时，必须通过调用工具来完成任务，不要编造执行结果。"
 
 type SessionManager struct {
 	botID string
@@ -139,6 +141,7 @@ type BotManager struct {
 	cfg             *config.Config
 	weaviateClient  *knowledge.WeaviateClient
 	builtinEmbedder *knowledge.BuiltinEmbedder
+	taskEngine      *task.Engine
 }
 
 func NewBotManager(cfg *config.Config, wc *knowledge.WeaviateClient, be *knowledge.BuiltinEmbedder) *BotManager {
@@ -148,6 +151,261 @@ func NewBotManager(cfg *config.Config, wc *knowledge.WeaviateClient, be *knowled
 		weaviateClient:  wc,
 		builtinEmbedder: be,
 	}
+}
+
+func (m *BotManager) SetTaskEngine(engine *task.Engine) {
+	m.taskEngine = engine
+}
+
+func (m *BotManager) TaskEngine() *task.Engine {
+	return m.taskEngine
+}
+
+func (m *BotManager) SetupTaskExecutor() {
+	if m.taskEngine == nil {
+		return
+	}
+
+	executor := task.NewExecutor(func(ctx context.Context, params task.ExecuteParams) error {
+		m.mu.Lock()
+		instance, ok := m.bots[params.BotID]
+		m.mu.Unlock()
+		if !ok || instance == nil {
+			return fmt.Errorf("机器人 %s 未运行", params.BotID)
+		}
+
+		log.Printf("[任务执行] bot=%s session=%s route=%s task=%s", params.BotID, params.SessionKey, params.Route, params.TaskID)
+
+		if params.TaskType == "session" {
+			return m.executeTaskForSession(instance, params)
+		}
+
+		return m.executeTaskForBot(instance, params)
+	})
+	m.taskEngine.SetExecutor(executor)
+}
+
+func (m *BotManager) executeTaskForSession(instance *BotInstance, params task.ExecuteParams) error {
+	reqID := fmt.Sprintf("task_%s", strings.ReplaceAll(params.TaskID, "-", ""))
+	sessionKey := params.SessionKey
+
+	var session db.Session
+	if err := db.DB.Where("session_key = ?", sessionKey).First(&session).Error; err != nil {
+		return fmt.Errorf("查询会话 %s 失败: %w", sessionKey, err)
+	}
+
+	chatID, chatType := sessionChatInfo(&session)
+	return m.executeWithRoute(instance, reqID, sessionKey, params.Route, params.Content, chatID, chatType)
+}
+
+func (m *BotManager) executeTaskForBot(instance *BotInstance, params task.ExecuteParams) error {
+	var sessions []db.Session
+	if err := db.DB.Where("bot_id = ?", params.BotID).Find(&sessions).Error; err != nil {
+		return fmt.Errorf("查询机器人 %s 的会话失败: %w", params.BotID, err)
+	}
+
+	if len(sessions) == 0 {
+		log.Printf("[任务执行] 机器人 %s 没有活跃会话", params.BotID)
+		return nil
+	}
+
+	prefix := ""
+	if params.GlobalTaskName != "" {
+		prefix = fmt.Sprintf("[%s] ", params.GlobalTaskName)
+	}
+
+	for _, s := range sessions {
+		sessionKey := s.SessionKey
+		reqID := fmt.Sprintf("task_%s_%s", strings.ReplaceAll(params.TaskID, "-", ""), sessionKey)
+
+		var logEntry = task.TaskExecutionLog{
+			ID:          uuid.New().String(),
+			TaskID:      params.TaskID,
+			TaskType:    "global",
+			BotID:       params.BotID,
+			SessionKey:  sessionKey,
+			Status:      "running",
+			TriggerType: "schedule",
+			ExecutedAt:  time.Now(),
+		}
+
+		content := params.Content
+		if prefix != "" {
+			content = prefix + content
+		}
+
+		chatID, chatType := sessionChatInfo(&s)
+		err := m.executeWithRoute(instance, reqID, sessionKey, params.Route, content, chatID, chatType)
+		if err != nil {
+			logEntry.Status = "failed"
+			logEntry.Result = err.Error()
+		} else {
+			logEntry.Status = "success"
+		}
+
+		if err := m.taskEngine.Store().CreateExecutionLog(&logEntry); err != nil {
+			log.Printf("[任务执行] 记录执行日志失败: %v", err)
+		}
+	}
+	return nil
+}
+
+func (m *BotManager) executeWithRoute(instance *BotInstance, reqID, sessionKey, route, content string, chatID string, chatType int) error {
+	if route == "direct" {
+		return instance.WeCom.SendActiveMsg(reqID, chatID, chatType, content)
+	}
+
+	if err := instance.WeCom.SendActiveMsg(reqID, chatID, chatType, "⏰ 定时任务已开始执行..."); err != nil {
+		log.Printf("[任务执行] 发送前置通知失败: %v", err)
+	}
+
+	provider, err := m.getLLMProvider(instance)
+	if err != nil {
+		errMsg := fmt.Sprintf("⏰ 定时任务执行失败: %v", err)
+		instance.WeCom.SendActiveMsg(reqID, chatID, chatType, errMsg)
+
+		m.taskEngine.Store().CreateExecutionLog(&task.TaskExecutionLog{
+			ID:          uuid.New().String(),
+			TaskID:      reqID,
+			TaskType:    "session",
+			BotID:       instance.ID,
+			SessionKey:  sessionKey,
+			Status:      "failed",
+			Result:      err.Error(),
+			TriggerType: "schedule",
+			ExecutedAt:  time.Now(),
+		})
+		return err
+	}
+
+	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, instance.Config.LLMModel)
+	if instance.Config.LLMTemperature != 0 {
+		llmClient.Temperature = instance.Config.LLMTemperature
+	}
+	if instance.Config.LLMMaxTokens != 0 {
+		llmClient.MaxTokens = instance.Config.LLMMaxTokens
+	}
+
+	history, err := instance.SessionMgr.GetHistory(sessionKey, 10)
+	if err != nil {
+		log.Printf("[任务执行] 获取会话历史失败: %v", err)
+	}
+
+	var msgs []llm.ChatMessage
+	msgs = append(msgs, llm.ChatMessage{Role: "system", Content: DefaultSystemPrompt})
+	if len(history) > 0 {
+		for i := len(history) - 1; i >= 0; i-- {
+			msgs = append(msgs, llm.ChatMessage{
+				Role:    history[i].Role,
+				Content: history[i].Content,
+			})
+		}
+	}
+	msgs = append(msgs, llm.ChatMessage{Role: "user", Content: content})
+
+	tools := instance.buildTools()
+	shellExec := agent.NewShellExecutor(nil, 30*time.Second, 4096)
+
+	var finalReply string
+	maxIterations := 10
+
+	log.Printf("[任务执行] 开始 agent 循环, maxIterations=%d, msgs=%d, tools=%d", maxIterations, len(msgs), len(tools))
+
+	for iter := 0; iter < maxIterations; iter++ {
+		log.Printf("[任务执行] iter=%d/%d 调用 Chat msgs=%d tools=%d", iter+1, maxIterations, len(msgs), len(tools))
+		resp, err := llmClient.Chat(msgs, tools)
+		if err != nil {
+			errMsg := fmt.Sprintf("⏰ 定时任务执行失败: %v", err)
+			instance.WeCom.SendActiveMsg(reqID, chatID, chatType, errMsg)
+
+			m.taskEngine.Store().CreateExecutionLog(&task.TaskExecutionLog{
+				ID:          uuid.New().String(),
+				TaskID:      reqID,
+				TaskType:    "session",
+				BotID:       instance.ID,
+				SessionKey:  sessionKey,
+				Status:      "failed",
+				Result:      err.Error(),
+				TriggerType: "schedule",
+				ExecutedAt:  time.Now(),
+			})
+			return err
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			finalReply = resp.Content
+			log.Printf("[任务执行] iter=%d 无 tool 调用, content=%q, 结束循环", iter+1, finalReply)
+			break
+		}
+
+		var toolNames []string
+		for _, tc := range resp.ToolCalls {
+			toolNames = append(toolNames, tc.Function.Name)
+		}
+		log.Printf("[任务执行] iter=%d 收到 tool 调用: %v", iter+1, toolNames)
+
+		msgs = append(msgs, llm.ChatMessage{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		for _, tc := range resp.ToolCalls {
+			var result string
+			if tc.Function.Name == "activate_skill" {
+				var args map[string]interface{}
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+					result = "参数解析失败: " + err.Error()
+				} else {
+					skillName, _ := args["skill_name"].(string)
+					if skill := instance.SkillEng.Lookup(instance.ID, skillName); skill != nil {
+						result = skill.SystemPrompt
+						if skill.Tools != "" {
+							var skillTools []llm.ToolDefinition
+							if err := json.Unmarshal([]byte(skill.Tools), &skillTools); err == nil {
+								tools = append(tools, skillTools...)
+							}
+						}
+						loadGoJudgeTools(instance.ID, skill, &tools)
+					} else {
+						result = "未找到技能: " + skillName
+					}
+				}
+			} else {
+				result = instance.executeToolCall(tc, shellExec, sessionKey, func(chunk string) {})
+			}
+			msgs = append(msgs, llm.ChatMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	if finalReply == "" {
+		finalReply = "抱歉，处理超时，请重试"
+	}
+
+	if err := instance.SessionMgr.AddMessage(sessionKey, "assistant", finalReply, llm.EstimateTokens(finalReply)); err != nil {
+		log.Printf("[任务执行] 存储回复失败: %v", err)
+	}
+
+	return instance.WeCom.SendActiveMsg(reqID, chatID, chatType, finalReply)
+}
+
+func sessionChatInfo(s *db.Session) (chatID string, chatType int) {
+	if s.ConversationType == "group" && s.GroupID != "" {
+		return s.GroupID, 2
+	}
+	return s.UserID, 1
+}
+
+func (m *BotManager) getLLMProvider(instance *BotInstance) (*db.LLMProvider, error) {
+	var provider db.LLMProvider
+	if err := db.DB.Where("id = ?", instance.Config.LLMProviderID).First(&provider).Error; err != nil {
+		return nil, fmt.Errorf("LLM Provider %s 未找到: %w", instance.Config.LLMProviderID, err)
+	}
+	return &provider, nil
 }
 
 func (m *BotManager) AddBot(botID string, bot *BotInstance) {
@@ -238,27 +496,28 @@ func (m *BotManager) StartBot(botID string) error {
 	if b.LLMMaxTokens != nil {
 		maxTokens = *b.LLMMaxTokens
 	}
-	instance := &BotInstance{
-		ID: b.ID,
-		Config: BotConfig{
-			ID:               b.ID,
-			Name:             b.Name,
-			WecomBotID:       b.WecomBotID,
-			WecomSecret:      b.WecomSecret,
-			LLMProviderID:    b.LLMProviderID,
-			LLMModel:         b.LLMModel,
-			LLMTemperature:   temp,
-			LLMMaxTokens:     maxTokens,
-			MaxSessionTokens: lm,
-			Enabled:          b.Enabled,
-			GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
-		},
-		WeCom:           wecom,
-		SkillEng:        skillEng,
-		SessionMgr:      NewSessionManager(b.ID),
-		WeaviateClient:  m.weaviateClient,
-		BuiltinEmbedder: m.builtinEmbedder,
-	}
+		instance := &BotInstance{
+			ID: b.ID,
+			Config: BotConfig{
+				ID:               b.ID,
+				Name:             b.Name,
+				WecomBotID:       b.WecomBotID,
+				WecomSecret:      b.WecomSecret,
+				LLMProviderID:    b.LLMProviderID,
+				LLMModel:         b.LLMModel,
+				LLMTemperature:   temp,
+				LLMMaxTokens:     maxTokens,
+				MaxSessionTokens: lm,
+				Enabled:          b.Enabled,
+				GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
+			},
+			WeCom:           wecom,
+			SkillEng:        skillEng,
+			SessionMgr:      NewSessionManager(b.ID),
+			WeaviateClient:  m.weaviateClient,
+			BuiltinEmbedder: m.builtinEmbedder,
+			TaskEngine:      m.taskEngine,
+		}
 
 	wecom.SetMessageHandler(func(msg *WeComMessage) {
 		if err := instance.processWeComMessage(msg); err != nil {
@@ -508,11 +767,11 @@ func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
 						log.Printf("[loop] iter=%d 未找到技能: %s", iter, skillName)
 					}
 				}
-			} else {
-				log.Printf("[loop] iter=%d 执行 tool: %s args=%s", iter, tc.Function.Name, tc.Function.Arguments)
-				result = b.executeToolCall(tc, shellExec, func(chunk string) {
-					writeDisplay(chunk)
-				})
+				} else {
+					log.Printf("[loop] iter=%d 执行 tool: %s args=%s", iter, tc.Function.Name, tc.Function.Arguments)
+					result = b.executeToolCall(tc, shellExec, session.SessionKey, func(chunk string) {
+						writeDisplay(chunk)
+					})
 				log.Printf("[loop] iter=%d tool %s 结果: %s", iter, tc.Function.Name, result)
 			}
 			msgs = append(msgs, llm.ChatMessage{
@@ -627,6 +886,58 @@ func (b *BotInstance) buildTools() []llm.ToolDefinition {
 			},
 		},
 	})
+
+	// Add scheduled_task tool if task engine is available
+	if b.TaskEngine != nil {
+		tools = append(tools, llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "scheduled_task",
+				Description: "管理当前会话的定时任务：创建定时任务、取消任务、列出任务。注意：必须调用此工具才能真正创建/取消任务，不要编造任务 ID 或假装任务已创建。创建任务时根据对话语境判断 route 参数：如果需要 AI 加工结果则用 \"llm\"，如果只是直接推送消息则用 \"direct\"。run_at 参数必须包含时区（如 \"2026-07-11T01:53:00+08:00\"）。",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"operation": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"create", "cancel", "list"},
+							"description": "操作类型",
+						},
+						"task_type": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"interval", "cron", "once"},
+							"description": "定时类型：interval=间隔执行, cron=表达式, once=一次性",
+						},
+						"interval_sec": map[string]interface{}{
+							"type":        "number",
+							"description": "间隔秒数（task_type=interval 时必填）",
+						},
+						"cron_expr": map[string]interface{}{
+							"type":        "string",
+							"description": "cron 表达式（task_type=cron 时必填）",
+						},
+						"run_at": map[string]interface{}{
+							"type":        "string",
+							"description": "执行时间 ISO8601（task_type=once 时必填）",
+						},
+						"content": map[string]interface{}{
+							"type":        "string",
+							"description": "任务内容。如果 route=direct 则为直接发送给用户的消息文本；如果 route=llm 则为给 LLM 的指令",
+						},
+						"route": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"llm", "direct"},
+							"description": "执行路由：llm=走 LLM 处理后再发结果, direct=直接发消息",
+						},
+						"task_id": map[string]interface{}{
+							"type":        "string",
+							"description": "任务 ID（cancel 时必填）",
+						},
+					},
+					"required": []string{"operation"},
+				},
+			},
+		})
+	}
 
 	// Add search_knowledge tool if Weaviate client is available
 	if b.WeaviateClient != nil {
@@ -822,14 +1133,21 @@ func buildToolParams(inputParams string) map[string]interface{} {
 	}
 }
 
-func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExecutor, streamFn func(string)) string {
+func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExecutor, sessionKey string, streamFn func(string)) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return "参数解析失败: " + err.Error()
 	}
 
 	switch {
-	case tc.Function.Name == "search_knowledge":
+		case tc.Function.Name == "scheduled_task":
+			if b.TaskEngine == nil {
+				return "定时任务引擎未初始化"
+			}
+			handler := task.NewScheduledTaskHandler(b.TaskEngine.Store(), b.TaskEngine)
+			return handler.Handle(json.RawMessage(tc.Function.Arguments), b.ID, sessionKey)
+
+		case tc.Function.Name == "search_knowledge":
 		query, _ := args["query"].(string)
 		if query == "" {
 			return "缺少 query 参数"

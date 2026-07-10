@@ -9,6 +9,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-resty/resty/v2"
+	"github.com/google/uuid"
 	"github.com/hchw/bots-nest/internal/agent"
 	"github.com/hchw/bots-nest/internal/bot"
 	"github.com/hchw/bots-nest/internal/config"
@@ -16,12 +23,8 @@ import (
 	"github.com/hchw/bots-nest/internal/knowledge"
 	"github.com/hchw/bots-nest/internal/llm"
 	"github.com/hchw/bots-nest/internal/skilltool"
+	"github.com/hchw/bots-nest/internal/task"
 	"github.com/hchw/bots-nest/internal/ws"
-	"strconv"
-	"strings"
-
-	"github.com/gin-gonic/gin"
-	"github.com/go-resty/resty/v2"
 )
 
 type Handler struct {
@@ -30,6 +33,7 @@ type Handler struct {
 	weaviateClient *knowledge.WeaviateClient
 	wsHub          *ws.Hub
 	importManager  *knowledge.ImportTaskManager
+	taskEngine     *task.Engine
 }
 
 func NewHandler(bm *bot.BotManager, cfg *config.Config, wc *knowledge.WeaviateClient, hub *ws.Hub, im *knowledge.ImportTaskManager) *Handler {
@@ -40,6 +44,10 @@ func NewHandler(bm *bot.BotManager, cfg *config.Config, wc *knowledge.WeaviateCl
 		wsHub:          hub,
 		importManager:  im,
 	}
+}
+
+func (h *Handler) SetTaskEngine(engine *task.Engine) {
+	h.taskEngine = engine
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -90,11 +98,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.GET("/bots/:id/bindings", h.getBotBindings)
 		api.PUT("/bots/:id/bindings", h.updateBotBindings)
 
-		api.GET("/sessions/:key", h.getSession)
-		api.POST("/sessions/:key/expire", h.expireSession)
-		api.DELETE("/sessions/:key", h.deleteSession)
+			api.GET("/sessions/:key", h.getSession)
+			api.POST("/sessions/:key/expire", h.expireSession)
+			api.DELETE("/sessions/:key", h.deleteSession)
+
+			taskGroup := api.Group("/tasks")
+			{
+				taskGroup.GET("/plugins", h.listTaskPlugins)
+				taskGroup.GET("/global-tasks", h.listGlobalTasks)
+				taskGroup.POST("/global-tasks", h.createGlobalTask)
+				taskGroup.PUT("/global-tasks/:id", h.updateGlobalTask)
+				taskGroup.DELETE("/global-tasks/:id", h.deleteGlobalTask)
+				taskGroup.GET("/global-tasks/:id/bindings", h.listTaskBindings)
+				taskGroup.POST("/global-tasks/:id/bindings", h.updateTaskBindings)
+				taskGroup.GET("/execution-logs", h.listExecutionLogs)
+				taskGroup.POST("/parse-llm-task", h.parseLLMTask)
+			}
+		}
 	}
-}
 
 func (h *Handler) listLLMProviders(c *gin.Context) {
 	var providers []db.LLMProvider
@@ -1248,4 +1269,339 @@ func (h *Handler) refreshKnowledgeSummaries(botID string, kbIDs []string) {
 			log.Printf("[KB-Summary] 保存知识库 %s 摘要失败: %v", kbID, err)
 		}
 	}
+}
+
+func (h *Handler) listTaskPlugins(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusOK, []task.TaskPlugin{})
+		return
+	}
+	plugins, err := h.taskEngine.Store().ListPlugins()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, plugins)
+}
+
+func (h *Handler) listGlobalTasks(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusOK, []task.GlobalTask{})
+		return
+	}
+	tasks, err := h.taskEngine.Store().ListGlobalTasks()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	type taskWithBindings struct {
+		task.GlobalTask
+		BotIDs []string `json:"bot_ids"`
+	}
+	result := make([]taskWithBindings, 0, len(tasks))
+	for _, t := range tasks {
+		bindings, _ := h.taskEngine.Store().ListBindingsByTask(t.ID)
+		botIDs := make([]string, len(bindings))
+		for i, b := range bindings {
+			botIDs[i] = b.BotID
+		}
+		result = append(result, taskWithBindings{t, botIDs})
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *Handler) createGlobalTask(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "定时任务引擎未初始化"})
+		return
+	}
+
+	var req struct {
+		Name        string   `json:"name" binding:"required"`
+		TaskType    string   `json:"task_type" binding:"required"`
+		CronExpr    string   `json:"cron_expr"`
+		IntervalSec int      `json:"interval_sec"`
+		Route       string   `json:"route" binding:"required"`
+		Content     string   `json:"content" binding:"required"`
+		Enabled     bool     `json:"enabled"`
+		BotIDs      []string `json:"bot_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+	if req.Enabled {
+		req.Enabled = true
+	}
+
+	t := task.GlobalTask{
+		ID:          uuid.New().String(),
+		Name:        req.Name,
+		TaskType:    req.TaskType,
+		CronExpr:    req.CronExpr,
+		IntervalSec: req.IntervalSec,
+		Route:       req.Route,
+		Content:     req.Content,
+		Enabled:     req.Enabled,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.taskEngine.Store().CreateGlobalTask(&t); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建失败: " + err.Error()})
+		return
+	}
+
+	if t.Enabled {
+		bindings := make([]task.GlobalTaskBinding, len(req.BotIDs))
+		for i, botID := range req.BotIDs {
+			bindings[i] = task.GlobalTaskBinding{
+				ID:        uuid.New().String(),
+				TaskID:    t.ID,
+				BotID:     botID,
+				CreatedAt: time.Now(),
+			}
+		}
+		for _, b := range bindings {
+			h.taskEngine.Store().CreateBinding(&b)
+		}
+
+		def := &task.TaskDefinition{
+			ID:          t.ID,
+			TaskType:    t.TaskType,
+			CronExpr:    t.CronExpr,
+			IntervalSec: t.IntervalSec,
+		}
+		if _, err := h.taskEngine.ScheduleGlobalTask(def, t, bindings); err != nil {
+			c.JSON(http.StatusOK, gin.H{"task": t, "warning": "调度失败: " + err.Error()})
+			return
+		}
+	} else {
+		for _, botID := range req.BotIDs {
+			h.taskEngine.Store().CreateBinding(&task.GlobalTaskBinding{
+				ID:        uuid.New().String(),
+				TaskID:    t.ID,
+				BotID:     botID,
+				CreatedAt: time.Now(),
+			})
+		}
+	}
+
+	c.JSON(http.StatusCreated, t)
+}
+
+func (h *Handler) updateGlobalTask(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "定时任务引擎未初始化"})
+		return
+	}
+
+	id := c.Param("id")
+	if _, err := h.taskEngine.Store().GetGlobalTask(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到"})
+		return
+	}
+
+	h.taskEngine.CancelTask(id)
+
+	var req struct {
+		Name        *string  `json:"name"`
+		TaskType    *string  `json:"task_type"`
+		CronExpr    *string  `json:"cron_expr"`
+		IntervalSec *int     `json:"interval_sec"`
+		Route       *string  `json:"route"`
+		Content     *string  `json:"content"`
+		Enabled     *bool    `json:"enabled"`
+		BotIDs      []string `json:"bot_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{"updated_at": now}
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.TaskType != nil {
+		updates["task_type"] = *req.TaskType
+	}
+	if req.CronExpr != nil {
+		updates["cron_expr"] = *req.CronExpr
+	}
+	if req.IntervalSec != nil {
+		updates["interval_sec"] = *req.IntervalSec
+	}
+	if req.Route != nil {
+		updates["route"] = *req.Route
+	}
+	if req.Content != nil {
+		updates["content"] = *req.Content
+	}
+	if req.Enabled != nil {
+		updates["enabled"] = *req.Enabled
+	}
+
+	if err := task.TaskDB.Model(&task.GlobalTask{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新失败: " + err.Error()})
+		return
+	}
+
+	if req.BotIDs != nil {
+		h.taskEngine.Store().DeleteBindingsByTask(id)
+		for _, botID := range req.BotIDs {
+			h.taskEngine.Store().CreateBinding(&task.GlobalTaskBinding{
+				ID:        uuid.New().String(),
+				TaskID:    id,
+				BotID:     botID,
+				CreatedAt: time.Now(),
+			})
+		}
+	}
+
+	updated, _ := h.taskEngine.Store().GetGlobalTask(id)
+	if updated != nil && updated.Enabled {
+		bindings, _ := h.taskEngine.Store().ListBindingsByTask(id)
+		def := &task.TaskDefinition{
+			ID:          updated.ID,
+			TaskType:    updated.TaskType,
+			CronExpr:    updated.CronExpr,
+			IntervalSec: updated.IntervalSec,
+		}
+		h.taskEngine.ScheduleGlobalTask(def, *updated, bindings)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "已更新"})
+}
+
+func (h *Handler) deleteGlobalTask(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "定时任务引擎未初始化"})
+		return
+	}
+
+	id := c.Param("id")
+	h.taskEngine.CancelTask(id)
+	h.taskEngine.Store().DeleteBindingsByTask(id)
+	if err := h.taskEngine.Store().DeleteGlobalTask(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+}
+
+func (h *Handler) listTaskBindings(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusOK, []task.GlobalTaskBinding{})
+		return
+	}
+
+	id := c.Param("id")
+	bindings, err := h.taskEngine.Store().ListBindingsByTask(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, bindings)
+}
+
+func (h *Handler) updateTaskBindings(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "定时任务引擎未初始化"})
+		return
+	}
+
+	id := c.Param("id")
+	var req struct {
+		BotIDs []string `json:"bot_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	h.taskEngine.Store().DeleteBindingsByTask(id)
+	for _, botID := range req.BotIDs {
+		h.taskEngine.Store().CreateBinding(&task.GlobalTaskBinding{
+			ID:        uuid.New().String(),
+			TaskID:    id,
+			BotID:     botID,
+			CreatedAt: time.Now(),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已更新"})
+}
+
+func (h *Handler) listExecutionLogs(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusOK, []task.TaskExecutionLog{})
+		return
+	}
+
+	taskID := c.Query("task_id")
+	logs, err := h.taskEngine.Store().ListExecutionLogs(taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, logs)
+}
+
+func (h *Handler) parseLLMTask(c *gin.Context) {
+	if h.taskEngine == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "定时任务引擎未初始化"})
+		return
+	}
+
+	var req struct {
+		Description string `json:"description" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	var provider db.LLMProvider
+	if err := db.DB.Where("enabled = 1").First(&provider).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "未找到可用的 LLM Provider"})
+		return
+	}
+
+	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, "gpt-4o")
+	llmClient.Temperature = 0.1
+
+	parsePrompt := fmt.Sprintf(`你是一个定时任务解析助手。请将用户的自然语言描述解析为定时任务的 JSON 参数。
+
+可用的 task_type: "cron"（cron 表达式）, "interval"（间隔秒数）, "once"（一次性）
+可用的 route: "llm"（AI 处理后推送）, "direct"（直接推送）
+
+请严格按照以下 JSON 格式输出，不要包含任何其他内容：
+{
+  "name": "任务名称",
+  "task_type": "cron/interval/once",
+  "cron_expr": "cron 表达式（task_type=cron 时必填）",
+  "interval_sec": 间隔秒数（task_type=interval 时必填）,
+  "route": "llm 或 direct，如果需要 AI 处理用 llm，直接推送用 direct",
+  "content": "任务执行时的内容/指令"
+}
+
+用户描述: %s`, req.Description)
+
+	resp, err := llmClient.Chat([]llm.ChatMessage{
+		{Role: "system", Content: parsePrompt},
+		{Role: "user", Content: req.Description},
+	}, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI 解析失败: " + err.Error()})
+		return
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.Content), &parsed); err != nil {
+		c.JSON(http.StatusOK, gin.H{"parsed": nil, "warning": "AI 返回格式无法解析，请手动填写"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"parsed": parsed})
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hchw/bots-nest/internal/knowledge"
+	"github.com/hchw/bots-nest/internal/task"
 )
 
 const wecomWSURL = "wss://openws.work.weixin.qq.com"
@@ -22,6 +23,7 @@ const (
 	cmdEventCallback  = "aibot_event_callback"
 	cmdRespondMsg     = "aibot_respond_msg"
 	cmdRespondWelcome = "aibot_respond_welcome_msg"
+	cmdSendMsg        = "aibot_send_msg"
 )
 
 type WeComMessage struct {
@@ -243,6 +245,37 @@ func (w *WeComClient) SendReply(reqID string, content string) error {
 	return w.SendStreamChunk(reqID, fmt.Sprintf("s_%d", time.Now().UnixNano()), content, true)
 }
 
+type WeComActiveMsg struct {
+	Cmd     string               `json:"cmd"`
+	Headers WeComHeaders         `json:"headers"`
+	Body    WeComActiveMsgBody   `json:"body"`
+}
+
+type WeComActiveMsgBody struct {
+	ChatID   string          `json:"chatid"`
+	ChatType int             `json:"chat_type"`
+	MsgType  string          `json:"msgtype"`
+	Markdown *WeComMarkdown  `json:"markdown,omitempty"`
+}
+
+type WeComMarkdown struct {
+	Content string `json:"content"`
+}
+
+func (w *WeComClient) SendActiveMsg(reqID, chatID string, chatType int, content string) error {
+	msg := WeComActiveMsg{
+		Cmd:     cmdSendMsg,
+		Headers: WeComHeaders{ReqID: reqID},
+		Body: WeComActiveMsgBody{
+			ChatID:   chatID,
+			ChatType: chatType,
+			MsgType:  "markdown",
+			Markdown: &WeComMarkdown{Content: content},
+		},
+	}
+	return w.writeJSON(msg)
+}
+
 func (w *WeComClient) SendStreamChunk(reqID, streamID, content string, finish bool) error {
 	msg := WeComOutgoingMsg{
 		Cmd:     cmdRespondMsg,
@@ -334,6 +367,7 @@ type BotInstance struct {
 	SessionMgr       *SessionManager
 	WeaviateClient   *knowledge.WeaviateClient
 	BuiltinEmbedder  *knowledge.BuiltinEmbedder
+	TaskEngine       *task.Engine
 }
 
 type BotConfig struct {

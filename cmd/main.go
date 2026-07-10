@@ -15,6 +15,7 @@ import (
 	"github.com/hchw/bots-nest/internal/config"
 	"github.com/hchw/bots-nest/internal/db"
 	"github.com/hchw/bots-nest/internal/knowledge"
+	"github.com/hchw/bots-nest/internal/task"
 	"github.com/hchw/bots-nest/internal/web"
 	"github.com/hchw/bots-nest/internal/ws"
 
@@ -128,12 +129,45 @@ func main() {
 
 	importManager.Recover()
 
+	// Initialize task module
+	log.Println("初始化定时任务模块...")
+	task.InitDB(".db/tasks.db?_journal_mode=WAL")
+	task.Migrate()
+
+	gocronPlugin := task.NewGocronPlugin()
+	task.GlobalRegistry().Register(gocronPlugin)
+
+	taskStore := task.NewStore()
+	taskEngine := task.NewEngine(taskStore, gocronPlugin)
+
+	// Seed default plugin record
+	if _, err := taskStore.GetPluginByType(task.PluginTypeGocron); err != nil {
+		taskStore.CreatePlugin(&task.TaskPlugin{
+			ID:          "gocron-default",
+			Name:        "gocron",
+			Type:        task.PluginTypeGocron,
+			Description: "基于 gocron v2 的默认定时任务组件",
+			Enabled:     true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		})
+	}
+
 	botManager := bot.NewBotManager(cfg, weaviateClient, builtinEmbedder)
+	botManager.SetTaskEngine(taskEngine)
+	botManager.SetupTaskExecutor()
+
+	if err := taskEngine.Start(); err != nil {
+		log.Printf("[定时任务] 引擎启动失败（不阻止启动）: %v", err)
+	} else {
+		log.Println("[定时任务] 引擎启动成功")
+	}
 	botManager.LoadFromDB()
 
 	r := gin.Default()
 
 	handler := api.NewHandler(botManager, cfg, weaviateClient, wsHub, importManager)
+	handler.SetTaskEngine(taskEngine)
 	handler.RegisterRoutes(r)
 
 	r.GET("/ws/tasks", ws.WSHandler(wsHub))
