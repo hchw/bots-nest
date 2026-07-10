@@ -6,6 +6,7 @@ import {
   ApiOutlined,
   ToolOutlined,
   DatabaseOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons'
 import LLMProviders from './pages/LLMProviders'
 import MCPs from './pages/MCPs'
@@ -15,6 +16,7 @@ import BotEdit from './pages/BotEdit'
 import BotDetail from './pages/BotDetail'
 import KnowledgeBases from './pages/KnowledgeBases'
 import KnowledgeBaseDetail from './pages/KnowledgeBaseDetail'
+import ScheduledTasks from './pages/ScheduledTasks'
 
 const { Sider, Content } = Layout
 
@@ -38,6 +40,11 @@ const menuItems = [
     key: '/knowledge-bases',
     icon: <DatabaseOutlined />,
     label: '知识库',
+  },
+  {
+    key: '/scheduled-tasks',
+    icon: <ClockCircleOutlined />,
+    label: '定时任务',
   },
 ]
 
@@ -89,6 +96,7 @@ export default function App() {
             <Route path="/bots/:id" element={<BotDetail />} />
             <Route path="/knowledge-bases" element={<KnowledgeBases />} />
             <Route path="/knowledge-bases/:id" element={<KnowledgeBaseDetail />} />
+            <Route path="/scheduled-tasks" element={<ScheduledTasks />} />
           </Routes>
         </Content>
       </Layout>

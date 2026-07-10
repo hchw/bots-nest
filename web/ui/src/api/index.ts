@@ -200,3 +200,55 @@ export const reimportFile = (kbId: string, taskId: string) => api.post(`/knowled
 export const getBotBindings = (botId: string) => api.get<BotBinding[]>(`/bots/${botId}/bindings`)
 export const updateBotBindings = (botId: string, data: { kb_ids: string[] }) =>
   api.put<BotBinding[]>(`/bots/${botId}/bindings`, data)
+
+export interface TaskPlugin {
+  id: string
+  name: string
+  type: string
+  description: string
+  enabled: boolean
+  created_at: string
+}
+
+export interface GlobalTask {
+  id: string
+  name: string
+  task_type: string
+  cron_expr: string
+  interval_sec: number
+  route: string
+  content: string
+  enabled: boolean
+  bot_ids?: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface TaskBinding {
+  id: string
+  task_id: string
+  bot_id: string
+  created_at: string
+}
+
+export interface TaskExecutionLog {
+  id: string
+  task_id: string
+  task_type: string
+  bot_id: string
+  session_key: string
+  status: string
+  result: string
+  trigger_type: string
+  executed_at: string
+}
+
+export const getTaskPlugins = () => api.get<TaskPlugin[]>('/tasks/plugins')
+export const getGlobalTasks = () => api.get<GlobalTask[]>('/tasks/global-tasks')
+export const createGlobalTask = (data: any) => api.post<GlobalTask>('/tasks/global-tasks', data)
+export const updateGlobalTask = (id: string, data: any) => api.put(`/tasks/global-tasks/${id}`, data)
+export const deleteGlobalTask = (id: string) => api.delete(`/tasks/global-tasks/${id}`)
+export const getTaskBindings = (taskId: string) => api.get<TaskBinding[]>(`/tasks/global-tasks/${taskId}/bindings`)
+export const updateTaskBindings = (taskId: string, data: { bot_ids: string[] }) => api.post(`/tasks/global-tasks/${taskId}/bindings`, data)
+export const getExecutionLogs = (taskId?: string) => api.get<TaskExecutionLog[]>('/tasks/execution-logs', { params: { task_id: taskId } })
+export const parseLLMTask = (description: string) => api.post<{ parsed: any }>('/tasks/parse-llm-task', { description })
