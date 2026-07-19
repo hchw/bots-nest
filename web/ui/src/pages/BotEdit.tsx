@@ -42,7 +42,24 @@ export default function BotEdit() {
         setSkills(skillsRes.data)
         setAllKBs(kbRes.data)
         setSelectedKBIDs(bindingRes.data.map((b: any) => b.kb_id))
-        form.setFieldsValue(botData)
+
+        const pt = botData.platform_type || 'wecom'
+        setPlatformType(pt)
+
+        const formValues: Record<string, any> = { ...botData, platform_type: pt }
+        if (botData.platform_config) {
+          try {
+            const pc = JSON.parse(botData.platform_config)
+            if (pt === 'wecom') {
+              if (pc.bot_id) formValues.wecom_bot_id = pc.bot_id
+              if (pc.secret) formValues.wecom_secret = pc.secret
+            } else if (pt === 'dingtalk') {
+              if (pc.client_id) formValues.dingtalk_client_id = pc.client_id
+              if (pc.client_secret) formValues.dingtalk_client_secret = pc.client_secret
+            }
+          } catch (_) {}
+        }
+        form.setFieldsValue(formValues)
         if (botData.llm_provider_id) {
           handleProviderChange(botData.llm_provider_id)
         }
@@ -61,19 +78,39 @@ export default function BotEdit() {
       .catch(() => {})
   }
 
+  const [platformType, setPlatformType] = useState('wecom')
+
+  const getPlatformConfig = (): string => {
+    const cfg: Record<string, string> = {}
+    if (platformType === 'wecom') {
+      const botId = form.getFieldValue('wecom_bot_id')
+      const secret = form.getFieldValue('wecom_secret')
+      if (botId) cfg.bot_id = botId
+      if (secret) cfg.secret = secret
+    } else if (platformType === 'dingtalk') {
+      const clientId = form.getFieldValue('dingtalk_client_id')
+      const clientSecret = form.getFieldValue('dingtalk_client_secret')
+      if (clientId) cfg.client_id = clientId
+      if (clientSecret) cfg.client_secret = clientSecret
+    }
+    return Object.keys(cfg).length > 0 ? JSON.stringify(cfg) : ''
+  }
+
   const handleSaveBasic = async () => {
     if (!id) return
     try {
       const values = await form.validateFields()
       setSaving(true)
       const payload: Record<string, any> = {}
-      const fields = ['name', 'wecom_bot_id', 'wecom_secret',
-        'llm_provider_id', 'llm_model', 'llm_temperature', 'llm_max_tokens', 'max_session_tokens', 'enabled']
+      const fields = ['name', 'llm_provider_id', 'llm_model', 'llm_temperature', 'llm_max_tokens', 'max_session_tokens', 'enabled']
       for (const key of fields) {
         if (values[key] !== undefined && values[key] !== null && values[key] !== '') {
           payload[key] = values[key]
         }
       }
+      payload.platform_type = platformType
+      const pc = getPlatformConfig()
+      if (pc) payload.platform_config = pc
       await updateBot(id, payload)
       message.success('基础配置已保存')
       navigate('/bots')
@@ -173,12 +210,31 @@ export default function BotEdit() {
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="我的机器人" />
           </Form.Item>
-          <Form.Item name="wecom_bot_id" label="Bot ID">
-            <Input placeholder="留空则不修改" />
+          <Form.Item name="platform_type" label="平台类型">
+            <Select onChange={(v) => setPlatformType(v)}>
+              <Select.Option value="wecom">企业微信</Select.Option>
+              <Select.Option value="dingtalk">钉钉</Select.Option>
+            </Select>
           </Form.Item>
-          <Form.Item name="wecom_secret" label="Secret">
-            <Input.Password placeholder="留空则不修改" />
-          </Form.Item>
+          {platformType === 'wecom' ? (
+            <>
+              <Form.Item name="wecom_bot_id" label="Bot ID">
+                <Input placeholder="留空则不修改" />
+              </Form.Item>
+              <Form.Item name="wecom_secret" label="Secret">
+                <Input.Password placeholder="留空则不修改" />
+              </Form.Item>
+            </>
+          ) : (
+            <>
+              <Form.Item name="dingtalk_client_id" label="Client ID (AppKey)">
+                <Input placeholder="留空则不修改" />
+              </Form.Item>
+              <Form.Item name="dingtalk_client_secret" label="Client Secret (AppSecret)">
+                <Input.Password placeholder="留空则不修改" />
+              </Form.Item>
+            </>
+          )}
           <Form.Item name="llm_provider_id" label="LLM Provider">
             <Select placeholder="选择 LLM Provider" onChange={handleProviderChange}>
               {providers.map(p => (

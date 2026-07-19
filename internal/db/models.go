@@ -36,8 +36,8 @@ type Bot struct {
 	ID               string    `gorm:"primaryKey;size:255" json:"id"`
 	Name             string    `gorm:"not null" json:"name"`
 	Status           string    `gorm:"default:disconnected" json:"status"`
-	WecomBotID       string    `gorm:"not null" json:"-"`
-	WecomSecret      string    `gorm:"not null" json:"-"`
+	PlatformType     string    `gorm:"default:wecom" json:"platform_type"`
+	PlatformConfig   string    `gorm:"type:text" json:"-"`
 	LLMProviderID    string    `gorm:"not null" json:"llm_provider_id"`
 	LLMModel         string    `gorm:"default:gpt-4o" json:"llm_model"`
 	LLMTemperature   *float64  `json:"llm_temperature"`

@@ -81,14 +81,17 @@ type WeComClient struct {
 	conn           *websocket.Conn
 	connMutex      sync.Mutex
 	connected      bool
-	msgHandler     func(msg *WeComMessage)
+	msgHandler     func(msg *Message)
 	stopChan       chan struct{}
 	closeOnce      sync.Once
 	wg             sync.WaitGroup
 	statusCallback func(status string)
+	status         string
 
 	lastSendTime    time.Time
 	minSendInterval time.Duration
+
+	translator Translator
 }
 
 func NewWeComClient(botID, secret string) *WeComClient {
@@ -97,15 +100,43 @@ func NewWeComClient(botID, secret string) *WeComClient {
 		secret:          secret,
 		stopChan:        make(chan struct{}),
 		minSendInterval: 150 * time.Millisecond,
+		translator:      NewWeComTranslator(),
 	}
 }
 
-func (w *WeComClient) SetMessageHandler(handler func(msg *WeComMessage)) {
+func (w *WeComClient) Start() error {
+	return w.Connect()
+}
+
+func (w *WeComClient) Stop() {
+	w.Close()
+}
+
+func (w *WeComClient) Status() string {
+	return w.status
+}
+
+func (w *WeComClient) Connected() bool {
+	return w.IsConnected()
+}
+
+func (w *WeComClient) Translator() Translator {
+	return w.translator
+}
+
+func (w *WeComClient) SetMessageHandler(handler func(msg *Message)) {
 	w.msgHandler = handler
 }
 
 func (w *WeComClient) SetStatusCallback(cb func(status string)) {
 	w.statusCallback = cb
+}
+
+func (w *WeComClient) notifyStatus(status string) {
+	w.status = status
+	if w.statusCallback != nil {
+		w.statusCallback(status)
+	}
 }
 
 func (w *WeComClient) Connect() error {
@@ -158,12 +189,6 @@ func (w *WeComClient) connect() error {
 	w.wg.Add(1)
 	go w.readLoop()
 	return nil
-}
-
-func (w *WeComClient) notifyStatus(status string) {
-	if w.statusCallback != nil {
-		w.statusCallback(status)
-	}
 }
 
 func (w *WeComClient) readLoop() {
@@ -221,7 +246,12 @@ func (w *WeComClient) readLoop() {
 			}
 		}
 
-		var msg WeComMessage
+		var msg struct {
+			Cmd  string `json:"cmd"`
+			Body struct {
+				EventType string `json:"event_type"`
+			} `json:"body"`
+		}
 		if err := json.Unmarshal(message, &msg); err != nil {
 			log.Printf("机器人 %s 消息解析失败: %v", w.botID, err)
 			continue
@@ -230,8 +260,13 @@ func (w *WeComClient) readLoop() {
 		switch msg.Cmd {
 		case cmdMsgCallback:
 			log.Printf("机器人 %s 收到消息: %s", w.botID, string(message))
-			if w.msgHandler != nil {
-				w.msgHandler(&msg)
+			parsed, err := w.translator.ParseIncoming(message)
+			if err != nil {
+				log.Printf("机器人 %s 消息转换失败: %v", w.botID, err)
+				continue
+			}
+			if parsed != nil && w.msgHandler != nil {
+				w.msgHandler(parsed)
 			}
 		case cmdEventCallback:
 			log.Printf("机器人 %s 收到事件: %s", w.botID, msg.Body.EventType)
@@ -362,7 +397,7 @@ func (w *WeComClient) IsConnected() bool {
 type BotInstance struct {
 	ID               string
 	Config           BotConfig
-	WeCom            *WeComClient
+	Platform         PlatformClient
 	SkillEng         *SkillEngine
 	SessionMgr       *SessionManager
 	WeaviateClient   *knowledge.WeaviateClient
@@ -373,8 +408,8 @@ type BotInstance struct {
 type BotConfig struct {
 	ID               string
 	Name             string
-	WecomBotID       string
-	WecomSecret      string
+	Platform         string
+	PlatformConfig   map[string]string
 	LLMProviderID    string
 	LLMModel         string
 	LLMTemperature   float64

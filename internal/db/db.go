@@ -102,11 +102,18 @@ func SeedFromYAML(cfg *config.Config) {
 	log.Printf("已导入 %d 个 MCP", len(cfg.MCPs))
 
 	for _, b := range cfg.Bots {
+		platformConfig := ""
+		if len(b.PlatformConfig) > 0 {
+			data, err := json.Marshal(b.PlatformConfig)
+			if err == nil {
+				platformConfig = string(data)
+			}
+		}
 		bot := Bot{
 			ID:               b.Name,
 			Name:             b.Name,
-			WecomBotID:       b.WecomBotID,
-			WecomSecret:      b.WecomSecret,
+			PlatformType:     b.Platform,
+			PlatformConfig:   platformConfig,
 			LLMProviderID:    b.LLMProviderID,
 			LLMModel:         b.LLMModel,
 			MaxSessionTokens: b.MaxSessionTokens,
