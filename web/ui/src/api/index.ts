@@ -31,6 +31,8 @@ export interface Bot {
   id: string
   name: string
   status: string
+  platform_type: string
+  platform_config: string
   llm_provider_id: string
   llm_model: string
   llm_temperature: number | null

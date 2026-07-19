@@ -705,29 +705,48 @@ func (h *Handler) deleteMCP(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
+type createBotRequest struct {
+	ID               string   `json:"id" binding:"required"`
+	Name             string   `json:"name" binding:"required"`
+	PlatformType     string   `json:"platform_type"`
+	PlatformConfig   string   `json:"platform_config"`
+	LLMProviderID    string   `json:"llm_provider_id" binding:"required"`
+	LLMModel         string   `json:"llm_model"`
+	LLMTemperature   *float64 `json:"llm_temperature"`
+	LLMMaxTokens     *int     `json:"llm_max_tokens"`
+	MaxSessionTokens int      `json:"max_session_tokens"`
+}
+
+type updateBotRequest struct {
+	Name             *string  `json:"name"`
+	PlatformType     *string  `json:"platform_type"`
+	PlatformConfig   *string  `json:"platform_config"`
+	LLMProviderID    *string  `json:"llm_provider_id"`
+	LLMModel         *string  `json:"llm_model"`
+	LLMTemperature   *float64 `json:"llm_temperature"`
+	LLMMaxTokens     *int     `json:"llm_max_tokens"`
+	MaxSessionTokens *int     `json:"max_session_tokens"`
+	Enabled          *bool    `json:"enabled"`
+}
+
 func (h *Handler) createBot(c *gin.Context) {
-	var req struct {
-		ID               string   `json:"id" binding:"required"`
-		Name             string   `json:"name" binding:"required"`
-		WecomBotID       string   `json:"wecom_bot_id" binding:"required"`
-		WecomSecret      string   `json:"wecom_secret" binding:"required"`
-		LLMProviderID    string   `json:"llm_provider_id" binding:"required"`
-		LLMModel         string   `json:"llm_model"`
-		LLMTemperature   *float64 `json:"llm_temperature"`
-		LLMMaxTokens     *int     `json:"llm_max_tokens"`
-		MaxSessionTokens int      `json:"max_session_tokens"`
-	}
+	var req createBotRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
 		return
+	}
+
+	platformType := req.PlatformType
+	if platformType == "" {
+		platformType = "wecom"
 	}
 
 	bot := db.Bot{
 		ID:               req.ID,
 		Name:             req.Name,
 		Status:           "disconnected",
-		WecomBotID:       req.WecomBotID,
-		WecomSecret:      req.WecomSecret,
+		PlatformType:     platformType,
+		PlatformConfig:   req.PlatformConfig,
 		LLMProviderID:    req.LLMProviderID,
 		LLMModel:         req.LLMModel,
 		LLMTemperature:   req.LLMTemperature,
@@ -757,17 +776,7 @@ func (h *Handler) updateBot(c *gin.Context) {
 		return
 	}
 
-	var req struct {
-		Name             *string  `json:"name"`
-		WecomBotID       *string  `json:"wecom_bot_id"`
-		WecomSecret      *string  `json:"wecom_secret"`
-		LLMProviderID    *string  `json:"llm_provider_id"`
-		LLMModel         *string  `json:"llm_model"`
-		LLMTemperature   *float64 `json:"llm_temperature"`
-		LLMMaxTokens     *int     `json:"llm_max_tokens"`
-		MaxSessionTokens *int     `json:"max_session_tokens"`
-		Enabled          *bool    `json:"enabled"`
-	}
+	var req updateBotRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
 		return
@@ -777,11 +786,11 @@ func (h *Handler) updateBot(c *gin.Context) {
 	if req.Name != nil {
 		updates["name"] = *req.Name
 	}
-	if req.WecomBotID != nil {
-		updates["wecom_bot_id"] = *req.WecomBotID
+	if req.PlatformType != nil {
+		updates["platform_type"] = *req.PlatformType
 	}
-	if req.WecomSecret != nil {
-		updates["wecom_secret"] = *req.WecomSecret
+	if req.PlatformConfig != nil {
+		updates["platform_config"] = *req.PlatformConfig
 	}
 	if req.LLMProviderID != nil {
 		updates["llm_provider_id"] = *req.LLMProviderID

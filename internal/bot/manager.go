@@ -25,7 +25,8 @@ import (
 const DefaultSystemPrompt = "你是智能助手。当有可用工具时，必须通过调用工具来完成任务，不要编造执行结果。"
 
 type SessionManager struct {
-	botID string
+	botID    string
+	platform string
 }
 
 func NewSessionManager(botID string) *SessionManager {
@@ -33,7 +34,7 @@ func NewSessionManager(botID string) *SessionManager {
 }
 
 func (m *SessionManager) GetOrCreate(userID, userName, convType, groupID string) (*db.Session, error) {
-	key := fmt.Sprintf("%s:%s:%s", m.botID, userID, convType)
+	key := m.sessionKey(userID, convType)
 
 	var session db.Session
 	result := db.DB.Where("session_key = ?", key).First(&session)
@@ -63,6 +64,34 @@ func (m *SessionManager) AddMessage(sessionKey, role, content string, tokens int
 		Tokens:     tokens,
 	}
 	return db.DB.Create(&msg).Error
+}
+
+func (m *SessionManager) sessionKey(userID, convType string) string {
+	if m.platform != "" {
+		return fmt.Sprintf("%s:%s:%s:%s", m.botID, m.platform, userID, convType)
+	}
+	return fmt.Sprintf("%s:%s:%s", m.botID, userID, convType)
+}
+
+func (m *SessionManager) GetOrCreateWithKey(sessionKey, userID, userName, convType, groupID string) (*db.Session, error) {
+	var session db.Session
+	result := db.DB.Where("session_key = ?", sessionKey).First(&session)
+	if result.Error == nil {
+		return &session, nil
+	}
+
+	session = db.Session{
+		SessionKey:       sessionKey,
+		BotID:            m.botID,
+		UserID:           userID,
+		UserName:         userName,
+		ConversationType: convType,
+		GroupID:          groupID,
+	}
+	if err := db.DB.Create(&session).Error; err != nil {
+		return nil, err
+	}
+	return &session, nil
 }
 
 func (m *SessionManager) GetHistory(sessionKey string, limit int) ([]db.Message, error) {
@@ -252,17 +281,17 @@ func (m *BotManager) executeTaskForBot(instance *BotInstance, params task.Execut
 
 func (m *BotManager) executeWithRoute(instance *BotInstance, reqID, sessionKey, route, content string, chatID string, chatType int) error {
 	if route == "direct" {
-		return instance.WeCom.SendActiveMsg(reqID, chatID, chatType, content)
+		return instance.Platform.SendActiveMsg(reqID, chatID, chatType, content)
 	}
 
-	if err := instance.WeCom.SendActiveMsg(reqID, chatID, chatType, "⏰ 定时任务已开始执行..."); err != nil {
+	if err := instance.Platform.SendActiveMsg(reqID, chatID, chatType, "⏰ 定时任务已开始执行..."); err != nil {
 		log.Printf("[任务执行] 发送前置通知失败: %v", err)
 	}
 
 	provider, err := m.getLLMProvider(instance)
 	if err != nil {
 		errMsg := fmt.Sprintf("⏰ 定时任务执行失败: %v", err)
-		instance.WeCom.SendActiveMsg(reqID, chatID, chatType, errMsg)
+		instance.Platform.SendActiveMsg(reqID, chatID, chatType, errMsg)
 
 		m.taskEngine.Store().CreateExecutionLog(&task.TaskExecutionLog{
 			ID:          uuid.New().String(),
@@ -316,7 +345,7 @@ func (m *BotManager) executeWithRoute(instance *BotInstance, reqID, sessionKey, 
 		resp, err := llmClient.Chat(msgs, tools)
 		if err != nil {
 			errMsg := fmt.Sprintf("⏰ 定时任务执行失败: %v", err)
-			instance.WeCom.SendActiveMsg(reqID, chatID, chatType, errMsg)
+			instance.Platform.SendActiveMsg(reqID, chatID, chatType, errMsg)
 
 			m.taskEngine.Store().CreateExecutionLog(&task.TaskExecutionLog{
 				ID:          uuid.New().String(),
@@ -390,7 +419,7 @@ func (m *BotManager) executeWithRoute(instance *BotInstance, reqID, sessionKey, 
 		log.Printf("[任务执行] 存储回复失败: %v", err)
 	}
 
-	return instance.WeCom.SendActiveMsg(reqID, chatID, chatType, finalReply)
+	return instance.Platform.SendActiveMsg(reqID, chatID, chatType, finalReply)
 }
 
 func sessionChatInfo(s *db.Session) (chatID string, chatType int) {
@@ -426,6 +455,46 @@ func (m *BotManager) RemoveBot(botID string) {
 	delete(m.bots, botID)
 }
 
+func (m *BotManager) createPlatformClient(b *db.Bot) (PlatformClient, error) {
+	platformType := b.PlatformType
+	if platformType == "" {
+		platformType = "wecom"
+	}
+
+	switch platformType {
+	case "wecom":
+		var cfg struct {
+			BotID  string `json:"bot_id"`
+			Secret string `json:"secret"`
+		}
+		if b.PlatformConfig != "" {
+			if err := json.Unmarshal([]byte(b.PlatformConfig), &cfg); err != nil {
+				return nil, fmt.Errorf("解析 WeCom 配置失败: %w", err)
+			}
+		}
+		if cfg.BotID == "" || cfg.Secret == "" {
+			return nil, fmt.Errorf("WeCom 配置缺少 bot_id 或 secret")
+		}
+		return NewWeComClient(cfg.BotID, cfg.Secret), nil
+	case "dingtalk":
+		var cfg struct {
+			ClientID     string `json:"client_id"`
+			ClientSecret string `json:"client_secret"`
+		}
+		if b.PlatformConfig != "" {
+			if err := json.Unmarshal([]byte(b.PlatformConfig), &cfg); err != nil {
+				return nil, fmt.Errorf("解析钉钉配置失败: %w", err)
+			}
+		}
+		if cfg.ClientID == "" || cfg.ClientSecret == "" {
+			return nil, fmt.Errorf("钉钉配置缺少 client_id 或 client_secret")
+		}
+		return NewDingTalkClient(cfg.ClientID, cfg.ClientSecret), nil
+	default:
+		return nil, fmt.Errorf("不支持的平台类型: %s", platformType)
+	}
+}
+
 func (m *BotManager) StartBot(botID string) error {
 	if m.GetBot(botID) != nil {
 		return fmt.Errorf("机器人 %s 已在运行", botID)
@@ -436,7 +505,11 @@ func (m *BotManager) StartBot(botID string) error {
 		return fmt.Errorf("机器人 %s 未找到", botID)
 	}
 
-	wecom := NewWeComClient(b.WecomBotID, b.WecomSecret)
+	platformClient, err := m.createPlatformClient(&b)
+	if err != nil {
+		return fmt.Errorf("创建平台客户端失败: %w", err)
+	}
+
 	skillEng := NewSkillEngine()
 
 	builtinSkills, err := LoadBuiltinSkills(m.cfg.SkillsDir)
@@ -496,49 +569,53 @@ func (m *BotManager) StartBot(botID string) error {
 	if b.LLMMaxTokens != nil {
 		maxTokens = *b.LLMMaxTokens
 	}
-		instance := &BotInstance{
-			ID: b.ID,
-			Config: BotConfig{
-				ID:               b.ID,
-				Name:             b.Name,
-				WecomBotID:       b.WecomBotID,
-				WecomSecret:      b.WecomSecret,
-				LLMProviderID:    b.LLMProviderID,
-				LLMModel:         b.LLMModel,
-				LLMTemperature:   temp,
-				LLMMaxTokens:     maxTokens,
-				MaxSessionTokens: lm,
-				Enabled:          b.Enabled,
-				GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
-			},
-			WeCom:           wecom,
-			SkillEng:        skillEng,
-			SessionMgr:      NewSessionManager(b.ID),
-			WeaviateClient:  m.weaviateClient,
-			BuiltinEmbedder: m.builtinEmbedder,
-			TaskEngine:      m.taskEngine,
-		}
+	instance := &BotInstance{
+		ID: b.ID,
+		Config: BotConfig{
+			ID:               b.ID,
+			Name:             b.Name,
+			Platform:         b.PlatformType,
+			LLMProviderID:    b.LLMProviderID,
+			LLMModel:         b.LLMModel,
+			LLMTemperature:   temp,
+			LLMMaxTokens:     maxTokens,
+			MaxSessionTokens: lm,
+			Enabled:          b.Enabled,
+			GoJudgeEndpoint:  m.cfg.GoJudgeEndpoint,
+		},
+		Platform:        platformClient,
+		SkillEng:        skillEng,
+		SessionMgr:      NewSessionManager(b.ID),
+		WeaviateClient:  m.weaviateClient,
+		BuiltinEmbedder: m.builtinEmbedder,
+		TaskEngine:      m.taskEngine,
+	}
 
-	wecom.SetMessageHandler(func(msg *WeComMessage) {
-		if err := instance.processWeComMessage(msg); err != nil {
-			log.Printf("机器人 %s 消息处理失败: %v", b.ID, err)
-		}
-	})
-
-	wecom.SetStatusCallback(func(status string) {
+	platformClient.SetStatusCallback(func(status string) {
 		db.DB.Model(&db.Bot{}).Where("id = ?", b.ID).Update("status", status)
 	})
 
-	log.Printf("[管理器] 启动机器人 %s (wecom_bot_id=%s)", b.ID, b.WecomBotID)
+	log.Printf("[管理器] 启动机器人 %s (platform=%s)", b.ID, b.PlatformType)
 
-	if err := wecom.Connect(); err != nil {
+	if err := platformClient.Start(); err != nil {
 		log.Printf("[管理器] 机器人 %s 连接失败: %v", b.ID, err)
 		return fmt.Errorf("机器人 %s 连接失败: %w", b.ID, err)
 	}
 
+	// Register message handler after successful connection
+	instance.registerMessageHandler()
+
 	m.AddBot(b.ID, instance)
 	log.Printf("[管理器] 机器人 %s 启动成功", b.ID)
 	return nil
+}
+
+func (b *BotInstance) registerMessageHandler() {
+	b.Platform.SetMessageHandler(func(msg *Message) {
+		if err := b.HandleMessage(msg); err != nil {
+			log.Printf("机器人 %s 消息处理失败: %v", b.ID, err)
+		}
+	})
 }
 
 func (m *BotManager) StopBot(botID string) error {
@@ -553,7 +630,7 @@ func (m *BotManager) StopBot(botID string) error {
 	m.mu.Unlock()
 
 	log.Printf("[管理器] 正在停止机器人 %s", botID)
-	instance.WeCom.Close()
+	instance.Platform.Stop()
 	log.Printf("[管理器] 机器人 %s 已停止", botID)
 	return nil
 }
@@ -571,238 +648,6 @@ func (m *BotManager) LoadFromDB() {
 			log.Printf("启动机器人 %s 失败: %v", b.Name, err)
 		}
 	}
-}
-
-func (b *BotInstance) processWeComMessage(msg *WeComMessage) error {
-	body := msg.Body
-
-	userID := ""
-	if body.From != nil {
-		userID = body.From.UserID
-	}
-
-	convType := "single"
-	groupID := ""
-	if body.ChatID != "" {
-		convType = "group"
-		groupID = body.ChatID
-	} else if body.ChatType == "group" {
-		convType = "group"
-	}
-
-	session, err := b.SessionMgr.GetOrCreate(userID, userID, convType, groupID)
-	if err != nil {
-		return fmt.Errorf("获取/创建会话失败: %w", err)
-	}
-
-	userContent := ""
-	switch body.MsgType {
-	case "text":
-		if body.Text != nil {
-			userContent = body.Text.Content
-		}
-	default:
-		log.Printf("机器人 %s 收到不支持的消息类型: %s", b.ID, body.MsgType)
-		return nil
-	}
-
-	if userContent == "" {
-		log.Printf("机器人 %s 收到空消息, 跳过处理", b.ID)
-		return nil
-	}
-
-	if err := b.SessionMgr.AddMessage(session.SessionKey, "user", userContent, llm.EstimateTokens(userContent)); err != nil {
-		return fmt.Errorf("存储用户消息失败: %w", err)
-	}
-
-	// Handle special commands
-	switch cmd := strings.TrimSpace(userContent); cmd {
-	case "/clear":
-		if err := b.SessionMgr.ClearSession(session.SessionKey); err != nil {
-			return fmt.Errorf("清空会话失败: %w", err)
-		}
-		b.WeCom.SendReply(msg.Headers.ReqID, "会话已清空")
-		return nil
-	case "/compress":
-		return b.handleCompressCommand(msg, session.SessionKey)
-	}
-
-	// Build LLM messages
-	var msgs []llm.ChatMessage
-
-	msgs = append(msgs, llm.ChatMessage{Role: "system", Content: DefaultSystemPrompt})
-
-	// Load history (newest first), reverse to chronological order
-	history, err := b.SessionMgr.GetHistory(session.SessionKey, 20)
-	if err != nil {
-		return fmt.Errorf("加载历史失败: %w", err)
-	}
-	for i := len(history) - 1; i >= 0; i-- {
-		msgs = append(msgs, llm.ChatMessage{
-			Role:    history[i].Role,
-			Content: history[i].Content,
-		})
-	}
-
-	// Build tools list from MCP + Skills + Shell Agent
-	tools := b.buildTools()
-
-	// Create LLM client from bot's provider
-	var provider db.LLMProvider
-	if err := db.DB.Where("id = ?", b.Config.LLMProviderID).First(&provider).Error; err != nil {
-		return fmt.Errorf("LLM Provider %s 未找到: %w", b.Config.LLMProviderID, err)
-	}
-	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, b.Config.LLMModel)
-	if b.Config.LLMTemperature != 0 {
-		llmClient.Temperature = b.Config.LLMTemperature
-	}
-	if b.Config.LLMMaxTokens != 0 {
-		llmClient.MaxTokens = b.Config.LLMMaxTokens
-	}
-
-	// Tool call loop with streaming
-	shellExec := agent.NewShellExecutor(nil, 30*time.Second, 4096)
-	reqID := msg.Headers.ReqID
-	streamID := fmt.Sprintf("s_%d", time.Now().UnixNano())
-
-	var finalReply string
-	maxIterations := 10
-
-	var displayBuf strings.Builder
-	var lastFlushedLen int
-	var lastFlush time.Time
-
-	flushDisplay := func(finish bool) {
-		content := displayBuf.String()
-		if len(content) > 0 || finish {
-			b.WeCom.SendStreamChunk(reqID, streamID, content, finish)
-			lastFlush = time.Now()
-			lastFlushedLen = displayBuf.Len()
-		}
-	}
-
-	writeDisplay := func(content string) {
-		displayBuf.WriteString(content)
-		if displayBuf.Len()-lastFlushedLen >= 200 || time.Since(lastFlush) > time.Second {
-			flushDisplay(false)
-		}
-	}
-
-	writeDisplay("🤔 思考中...\n")
-	log.Printf("[loop] 开始循环, maxIterations=%d, msgs=%d, tools=%d", maxIterations, len(msgs), len(tools))
-
-	for iter := 0; iter < maxIterations; iter++ {
-		log.Printf("[loop] iter=%d/10 开始 ChatStream msgs=%d tools=%d", iter, len(msgs), len(tools))
-		eventCh, err := llmClient.ChatStream(msgs, tools)
-		if err != nil {
-			log.Printf("[loop] iter=%d ChatStream 出错: %v", iter, err)
-			writeDisplay("\n处理出错: " + err.Error())
-			flushDisplay(true)
-			return fmt.Errorf("LLM 流式调用失败: %w", err)
-		}
-
-		var contentBuf strings.Builder
-		var toolCalls []llm.ToolCall
-
-		log.Printf("[loop] iter=%d 开始读取流", iter)
-		for event := range eventCh {
-			if event.Content != "" {
-				contentBuf.WriteString(event.Content)
-				writeDisplay(event.Content)
-			}
-			if len(event.ToolCalls) > 0 {
-				toolCalls = event.ToolCalls
-			}
-			if event.Done {
-				break
-			}
-		}
-
-		if len(toolCalls) > 0 {
-			var names []string
-			for _, tc := range toolCalls {
-				names = append(names, tc.Function.Name)
-			}
-			log.Printf("[loop] iter=%d 收到 tool 调用: %v, content=%q", iter, names, contentBuf.String())
-			flushDisplay(false)
-		} else {
-			log.Printf("[loop] iter=%d 无 tool 调用, content=%q, 结束循环", iter, contentBuf.String())
-		}
-
-		if len(toolCalls) == 0 {
-			finalReply = contentBuf.String()
-			break
-		}
-
-		// Add assistant message with tool calls to context
-		msgs = append(msgs, llm.ChatMessage{
-			Role:      "assistant",
-			Content:   contentBuf.String(),
-			ToolCalls: toolCalls,
-		})
-
-		// Execute each tool call, streaming output to user
-		for _, tc := range toolCalls {
-			var result string
-			if tc.Function.Name == "activate_skill" {
-				var args map[string]interface{}
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-					result = "参数解析失败: " + err.Error()
-					log.Printf("[loop] iter=%d activate_skill 参数解析失败: %v", iter, err)
-				} else {
-					skillName, _ := args["skill_name"].(string)
-					log.Printf("[loop] iter=%d activate_skill skill=%s", iter, skillName)
-					if skill := b.SkillEng.Lookup(b.ID, skillName); skill != nil {
-						result = skill.SystemPrompt
-						if skill.Tools != "" {
-							var skillTools []llm.ToolDefinition
-							if err := json.Unmarshal([]byte(skill.Tools), &skillTools); err == nil {
-								tools = append(tools, skillTools...)
-							}
-						}
-						loadGoJudgeTools(b.ID, skill, &tools)
-						log.Printf("[loop] iter=%d activate_skill 完成, tools现在有 %d 个", iter, len(tools))
-					} else {
-						result = "未找到技能: " + skillName
-						log.Printf("[loop] iter=%d 未找到技能: %s", iter, skillName)
-					}
-				}
-				} else {
-					log.Printf("[loop] iter=%d 执行 tool: %s args=%s", iter, tc.Function.Name, tc.Function.Arguments)
-					result = b.executeToolCall(tc, shellExec, session.SessionKey, func(chunk string) {
-						writeDisplay(chunk)
-					})
-				log.Printf("[loop] iter=%d tool %s 结果: %s", iter, tc.Function.Name, result)
-			}
-			msgs = append(msgs, llm.ChatMessage{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
-		}
-	}
-
-	if finalReply == "" {
-		finalReply = "抱歉，处理超时，请重试"
-		log.Printf("[loop] 超时, 结束")
-	}
-	log.Printf("[loop] 最终回复: %s", finalReply)
-
-	// Send final reply as the content in the stream's final chunk
-	// (replaces any partial buffered content like "🤔 思考中...")
-	displayBuf.Reset()
-	displayBuf.WriteString(finalReply)
-	flushDisplay(true)
-
-	// Store assistant reply
-	if err := b.SessionMgr.AddMessage(session.SessionKey, "assistant", finalReply, llm.EstimateTokens(finalReply)); err != nil {
-		return fmt.Errorf("存储回复失败: %w", err)
-	}
-
-	// Auto-compress if token limit exceeded
-	b.autoCompressIfNeeded(session.SessionKey, reqID)
-
-	return nil
 }
 
 func (b *BotInstance) buildTools() []llm.ToolDefinition {
@@ -998,94 +843,6 @@ func (b *BotInstance) buildTools() []llm.ToolDefinition {
 	return tools
 }
 
-func (b *BotInstance) handleCompressCommand(msg *WeComMessage, sessionKey string) error {
-	history, err := b.SessionMgr.GetHistory(sessionKey, 100)
-	if err != nil {
-		return fmt.Errorf("获取历史消息失败: %w", err)
-	}
-	if len(history) == 0 {
-		b.WeCom.SendReply(msg.Headers.ReqID, "没有可压缩的消息")
-		return nil
-	}
-
-	var convBuf strings.Builder
-	for i := len(history) - 1; i >= 0; i-- {
-		convBuf.WriteString(history[i].Role + ": " + history[i].Content + "\n")
-	}
-
-	summaryMsgs := []llm.ChatMessage{
-		{Role: "system", Content: "你是一个对话摘要助手。请用中文简洁地总结以下对话的核心内容和关键信息，保留重要细节。"},
-		{Role: "user", Content: "请总结以下对话：\n\n" + convBuf.String()},
-	}
-
-	var provider db.LLMProvider
-	if err := db.DB.Where("id = ?", b.Config.LLMProviderID).First(&provider).Error; err != nil {
-		return fmt.Errorf("LLM Provider %s 未找到: %w", b.Config.LLMProviderID, err)
-	}
-	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, b.Config.LLMModel)
-	llmClient.Temperature = 0.3
-
-	resp, err := llmClient.Chat(summaryMsgs, nil)
-	if err != nil {
-		return fmt.Errorf("LLM 摘要生成失败: %w", err)
-	}
-
-	if err := b.SessionMgr.Compress(sessionKey, resp.Content); err != nil {
-		return fmt.Errorf("保存压缩摘要失败: %w", err)
-	}
-
-	b.WeCom.SendReply(msg.Headers.ReqID, "已压缩会话")
-	return nil
-}
-
-func (b *BotInstance) autoCompressIfNeeded(sessionKey string, reqID string) {
-	totalTokens, err := b.SessionMgr.TotalTokens(sessionKey)
-	if err != nil || totalTokens <= b.Config.MaxSessionTokens {
-		return
-	}
-
-	history, err := b.SessionMgr.GetHistory(sessionKey, 100)
-	if err != nil || len(history) == 0 {
-		return
-	}
-
-	var convBuf strings.Builder
-	for i := len(history) - 1; i >= 0; i-- {
-		convBuf.WriteString(history[i].Role + ": " + history[i].Content + "\n")
-	}
-
-	summaryMsgs := []llm.ChatMessage{
-		{Role: "system", Content: "你是一个对话摘要助手。请用中文简洁地总结以下对话的核心内容和关键信息，保留重要细节。"},
-		{Role: "user", Content: "请总结以下对话：\n\n" + convBuf.String()},
-	}
-
-	var provider db.LLMProvider
-	if err := db.DB.Where("id = ?", b.Config.LLMProviderID).First(&provider).Error; err != nil {
-		log.Printf("自动压缩失败: 获取 LLM Provider 出错: %v", err)
-		return
-	}
-	llmClient := llm.NewOpenAIClient(provider.Endpoint, provider.APIKey, b.Config.LLMModel)
-	llmClient.Temperature = 0.3
-
-	resp, err := llmClient.Chat(summaryMsgs, nil)
-	if err != nil {
-		log.Printf("自动压缩失败: LLM 摘要生成出错: %v", err)
-		return
-	}
-
-	if err := b.SessionMgr.Compress(sessionKey, resp.Content); err != nil {
-		log.Printf("自动压缩失败: 保存摘要出错: %v", err)
-		return
-	}
-
-	log.Printf("机器人 %s 会话 %s 自动压缩完成 (tokens: %d > %d)", b.ID, sessionKey, totalTokens, b.Config.MaxSessionTokens)
-	notifyContent := fmt.Sprintf("✅ 会话已自动压缩\n\n📝 摘要:\n%s", resp.Content)
-	if err := b.WeCom.SendReply(reqID, notifyContent); err != nil {
-		log.Printf("自动压缩通知发送失败: %v", err)
-	}
-
-}
-
 func loadGoJudgeTools(botID string, skill *Skill, tools *[]llm.ToolDefinition) {
 	var dbSkill db.Skill
 	if err := db.DB.Where("bot_id = ? AND name = ?", botID, skill.Name).First(&dbSkill).Error; err != nil {
@@ -1128,7 +885,7 @@ func buildToolParams(inputParams string) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"type": "object",
+		"type":       "object",
 		"properties": properties,
 	}
 }
@@ -1140,14 +897,14 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 	}
 
 	switch {
-		case tc.Function.Name == "scheduled_task":
-			if b.TaskEngine == nil {
-				return "定时任务引擎未初始化"
-			}
-			handler := task.NewScheduledTaskHandler(b.TaskEngine.Store(), b.TaskEngine)
-			return handler.Handle(json.RawMessage(tc.Function.Arguments), b.ID, sessionKey)
+	case tc.Function.Name == "scheduled_task":
+		if b.TaskEngine == nil {
+			return "定时任务引擎未初始化"
+		}
+		handler := task.NewScheduledTaskHandler(b.TaskEngine.Store(), b.TaskEngine)
+		return handler.Handle(json.RawMessage(tc.Function.Arguments), b.ID, sessionKey)
 
-		case tc.Function.Name == "search_knowledge":
+	case tc.Function.Name == "search_knowledge":
 		query, _ := args["query"].(string)
 		if query == "" {
 			return "缺少 query 参数"

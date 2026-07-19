@@ -50,8 +50,10 @@ knowledge_base:
 # Bots (机器人配置)
 bots:
   - name: "my-bot"
-    wecom_bot_id: "aibDKL2cTKOzrES6hhm_nhF4bHJjjIor8Cj"
-    wecom_secret: "eOtECozizpAvFj5vY1HwFuiNZAVx164Qv59yIamUWnm"
+    platform: "wecom"
+    platform_config:
+      bot_id: "aibDKL2cTKOzrES6hhm_nhF4bHJjjIor8Cj"
+      secret: "eOtECozizpAvFj5vY1HwFuiNZAVx164Qv59yIamUWnm"
     llm_provider_id: "default"
     llm_model: "gpt-4o"
     llm_temperature: 0.7

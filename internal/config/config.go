@@ -33,16 +33,16 @@ type SkillConfig struct {
 }
 
 type BotConfig struct {
-	Name             string        `yaml:"name"`
-	WecomBotID       string        `yaml:"wecom_bot_id"`
-	WecomSecret      string        `yaml:"wecom_secret"`
-	LLMProviderID    string        `yaml:"llm_provider_id"`
-	LLMModel         string        `yaml:"llm_model"`
-	LLMTemperature   float64       `yaml:"llm_temperature"`
-	LLMMaxTokens     int           `yaml:"llm_max_tokens"`
-	MaxSessionTokens int           `yaml:"max_session_tokens"`
-	Enabled          bool          `yaml:"enabled"`
-	Skills           []SkillConfig `yaml:"skills"`
+	Name             string                 `yaml:"name"`
+	Platform         string                 `yaml:"platform"`
+	PlatformConfig   map[string]interface{} `yaml:"platform_config"`
+	LLMProviderID    string                 `yaml:"llm_provider_id"`
+	LLMModel         string                 `yaml:"llm_model"`
+	LLMTemperature   float64                `yaml:"llm_temperature"`
+	LLMMaxTokens     int                    `yaml:"llm_max_tokens"`
+	MaxSessionTokens int                    `yaml:"max_session_tokens"`
+	Enabled          bool                   `yaml:"enabled"`
+	Skills           []SkillConfig          `yaml:"skills"`
 }
 
 type DatabaseConfig struct {
