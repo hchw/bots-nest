@@ -12,8 +12,7 @@
   <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react" />
   <img src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite" />
-  <img src="https://img.shields.io/badge/license-AGPL%20v3-blue" />
-  <a href="./COMMERCIAL_LICENSE.md"><img src="https://img.shields.io/badge/commercial-license-green" /></a>
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" />
 </p>
 
 ---
@@ -21,7 +20,6 @@
 ## 目录
 
 - [项目介绍](#项目介绍)
-- [商业授权](#商业授权)
 - [核心功能](#核心功能)
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
@@ -54,21 +52,9 @@
 
 ---
 
-## 双授权模式
+## License
 
-Bots Nest 采用 **AGPL v3 + 商业授权** 的双授权模式：
-
-| 版本 | 许可证 | 费用 | 适用场景 |
-|------|--------|------|----------|
-| **开源版（社区版）** | [AGPL v3](./LICENSE) | 免费 | 个人学习、非商业使用、愿意开源修改的企业 |
-| **商业版** | [商业授权](./COMMERCIAL_LICENSE.md) | 付费 | 企业内部私有化部署、不愿公开修改代码 |
-
-**简单来说：**
-- 如果你能接受修改代码后开源 → 用 AGPL 免费版
-- 如果你需要保留代码私有 → 购买商业授权
-- 商业授权包含优先技术支持和授权保障
-
-👉 [查看商业授权详情](./COMMERCIAL_LICENSE.md)
+Bots Nest 基于 [Apache License 2.0](./LICENSE) 开源发布。你可以自由使用、修改和分发，但需保留版权声明和许可声明。
 
 ---
 
@@ -392,16 +378,4 @@ Bots Nest 将持续迭代，以下是我们规划中的核心功能：
 
 ---
 
-## License
-
-Bots Nest 采用双授权模型：
-
-- **开源版** — [GNU Affero General Public License v3](./LICENSE)（AGPL v3）
-  - 自由使用、修改、分发，但修改后的代码必须开源
-  - 通过网络提供服务时，必须提供完整的源代码
-- **商业版** — [商业授权](./COMMERCIAL_LICENSE.md)
-  - 允许企业内部私有化部署和二次开发
-  - 无需公开任何修改代码
-  - 包含优先技术支持
-
-详见 [LICENSE](./LICENSE) 和 [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md)。
+详见 [LICENSE](./LICENSE)。
