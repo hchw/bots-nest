@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 hchw
 
 package bot
@@ -247,7 +247,10 @@ func (b *BotInstance) handleCompressCommand(replyToken string, sessionKey string
 
 	var convBuf strings.Builder
 	for i := len(history) - 1; i >= 0; i-- {
-		convBuf.WriteString(history[i].Role + ": " + history[i].Content + "\n")
+		convBuf.WriteString(history[i].Role)
+		convBuf.WriteString(": ")
+		convBuf.WriteString(history[i].Content)
+		convBuf.WriteString("\n")
 	}
 
 	summaryMsgs := []llm.ChatMessage{
@@ -288,7 +291,10 @@ func (b *BotInstance) autoCompressIfNeeded(sessionKey string, reqID string) {
 
 	var convBuf strings.Builder
 	for i := len(history) - 1; i >= 0; i-- {
-		convBuf.WriteString(history[i].Role + ": " + history[i].Content + "\n")
+		convBuf.WriteString(history[i].Role)
+		convBuf.WriteString(": ")
+		convBuf.WriteString(history[i].Content)
+		convBuf.WriteString("\n")
 	}
 
 	summaryMsgs := []llm.ChatMessage{
@@ -321,5 +327,3 @@ func (b *BotInstance) autoCompressIfNeeded(sessionKey string, reqID string) {
 		log.Printf("自动压缩通知发送失败: %v", err)
 	}
 }
-
-

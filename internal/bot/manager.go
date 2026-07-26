@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 hchw
 
 package bot
@@ -1058,14 +1058,19 @@ func (b *BotInstance) executeToolCall(tc llm.ToolCall, shellExec *agent.ShellExe
 
 		var buf strings.Builder
 		if resp.Stdout != "" {
-			buf.WriteString("stdout:\n" + resp.Stdout + "\n")
+			buf.WriteString("stdout:\n")
+			buf.WriteString(resp.Stdout)
+			buf.WriteString("\n")
 		}
 		if resp.Stderr != "" {
-			buf.WriteString("stderr:\n" + resp.Stderr + "\n")
+			buf.WriteString("stderr:\n")
+			buf.WriteString(resp.Stderr)
+			buf.WriteString("\n")
 		}
 		buf.WriteString(fmt.Sprintf("status: %d", resp.Status))
 		if resp.Error != "" {
-			buf.WriteString("\nerror: " + resp.Error)
+			buf.WriteString("\nerror: ")
+			buf.WriteString(resp.Error)
 		}
 		return buf.String()
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 hchw
 
 package bot
@@ -30,14 +30,18 @@ type DingTalkClient struct {
 
 	translator Translator
 
-	mu     sync.Mutex
-	stopCh chan struct{}
+	mu      sync.Mutex
+	stopCh  chan struct{}
 	started bool
+
+	webhookMu     sync.RWMutex
+	userWebhooks  map[string]string // senderId → sessionWebhook
+	groupWebhooks map[string]string // conversationId → sessionWebhook
 }
 
 type dingtalkReplyBody struct {
-	MsgType string          `json:"msgtype"`
-	Text    *dingtalkText   `json:"text,omitempty"`
+	MsgType  string            `json:"msgtype"`
+	Text     *dingtalkText     `json:"text,omitempty"`
 	Markdown *dingtalkMarkdown `json:"markdown,omitempty"`
 }
 
@@ -52,10 +56,12 @@ type dingtalkMarkdown struct {
 
 func NewDingTalkClient(clientID, clientSecret string) *DingTalkClient {
 	return &DingTalkClient{
-		clientID:     clientID,
-		clientSecret: clientSecret,
-		translator:   NewDingTalkTranslator(),
-		stopCh:       make(chan struct{}),
+		clientID:      clientID,
+		clientSecret:  clientSecret,
+		translator:    NewDingTalkTranslator(),
+		stopCh:        make(chan struct{}),
+		userWebhooks:  make(map[string]string),
+		groupWebhooks: make(map[string]string),
 	}
 }
 
@@ -98,6 +104,11 @@ func (d *DingTalkClient) watchDisconnect() {
 }
 
 func (d *DingTalkClient) onMessageReceived(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
+	d.webhookMu.Lock()
+	d.userWebhooks[data.SenderId] = data.SessionWebhook
+	d.groupWebhooks[data.ConversationId] = data.SessionWebhook
+	d.webhookMu.Unlock()
+
 	raw, _ := json.Marshal(data)
 	parsed, err := d.translator.ParseIncoming(raw)
 	if err != nil {
@@ -178,8 +189,26 @@ func (d *DingTalkClient) SendStreamChunk(reqID string, _ string, content string,
 	return nil
 }
 
-func (d *DingTalkClient) SendActiveMsg(_ string, _ string, _ int, _ string) error {
-	return fmt.Errorf("钉钉 Stream 模式不支持主动推送消息")
+func (d *DingTalkClient) SendActiveMsg(_ string, chatID string, chatType int, content string) error {
+	d.webhookMu.RLock()
+	webhook, ok := d.userWebhooks[chatID]
+	if !ok {
+		webhook, ok = d.groupWebhooks[chatID]
+	}
+	d.webhookMu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("钉钉主动推送失败: 未找到会话 %s 的 webhook (用户尚未给机器人发过消息)", chatID)
+	}
+
+	msgType := "text"
+	body := dingtalkReplyBody{
+		MsgType: msgType,
+		Text: &dingtalkText{
+			Content: content,
+		},
+	}
+	return d.postToWebhook(webhook, body)
 }
 
 func (d *DingTalkClient) postToWebhook(webhookURL string, body interface{}) error {
